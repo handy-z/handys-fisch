@@ -12,12 +12,11 @@ use handy_sdk::input::hooks::KeyPoller;
 use handy_sdk::input::key::{BACKSLASH, ENTER, Key, MOUSE_LEFT, SLASH, SPACE, digit_key, key_down};
 use handy_sdk::input::send::{press, release, tap};
 use handy_sdk::roblox::events::RobloxWatcher;
-use handy_sdk::util::event_bus::EventBus;
 use handy_sdk::util::timing::{Sustained, precise_wait};
 use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST};
 
 use crate::app::config::{Settings, SettingsStore, load_settings};
-use crate::game::catch::{Catch, Piece, is_item_popup, is_rare, kg_text, level_pieces, parse_catch};
+use crate::game::catch::{Catch, Piece, is_item_popup, kg_text, level_pieces, parse_catch};
 use crate::game::reader::{FishState, GameReader, PlayerInfo, ROD_IDLE, ROD_LURE, ROD_REELING, line_out, reel_state};
 
 const MS: fn(u64) -> Duration = Duration::from_millis;
@@ -408,10 +407,6 @@ impl SafetyGuard {
     }
 }
 
-/// Emitted on the bus for each catch matching the alert rule (the dashboard flashes the taskbar).
-#[derive(Clone, Debug)]
-pub struct RareCatch;
-
 /// Every key the bot sends, up unconditionally (a key-up for a key that isn't down does nothing).
 /// For crash/exit paths; a hard kill (Task Manager) runs no code, so it can't be covered.
 pub fn release_inputs() {
@@ -457,7 +452,6 @@ pub struct Bot {
     settings: Arc<SettingsStore>,
     roblox_foreground: Arc<AtomicBool>,
     watcher: RobloxWatcher,
-    bus: EventBus,
     config_ini: PathBuf,
     catch_log: PathBuf,
     /// toggled by the hotkey (while Roblox is focused) or the dashboard
@@ -533,7 +527,7 @@ struct Engine<'a> {
 }
 
 impl Bot {
-    /// watcher: polled by run() (this thread only) for chat focus. bus: RareCatch goes here.
+    /// watcher: polled by run() (this thread only) for chat focus.
     /// config_ini: where learned settings (rod) are saved as soon as they change.
     /// catch_log: CSV each catch is appended to (columns: CATCH_HEADER).
     pub fn new(
@@ -541,7 +535,6 @@ impl Bot {
         settings: Arc<SettingsStore>,
         roblox_foreground: Arc<AtomicBool>,
         watcher: RobloxWatcher,
-        bus: EventBus,
         config_ini: PathBuf,
         catch_log: PathBuf,
     ) -> Self {
@@ -550,7 +543,6 @@ impl Bot {
             settings,
             roblox_foreground,
             watcher,
-            bus,
             config_ini,
             catch_log,
             on: AtomicBool::new(false),
@@ -700,7 +692,7 @@ impl Engine<'_> {
         );
     }
 
-    /// on each catch popup: counts, view, alert
+    /// on each catch popup: counts, view
     fn count_catch(&mut self, text: &str) {
         let bot = self.bot;
         // The popup is read whether the macro is on or not, so a reel finished after F1 (or by hand) still counts.
@@ -735,12 +727,6 @@ impl Engine<'_> {
                 s.rarest = text.into();
             }
         });
-        let cfg = bot.settings.get();
-        if let Some(c) = &c
-            && is_rare(c, cfg.alert_odds, &cfg.alert_words)
-        {
-            bot.bus.emit(RareCatch);
-        }
     }
 
     /// ~400 ms later, with the XP popup: XP, log

@@ -116,7 +116,6 @@ fn main() {
         store.clone(),
         roblox_foreground.clone(),
         watcher,
-        bus.clone(),
         ini.clone(),
         app_data_dir().join("catches.csv"),
     ));
@@ -138,7 +137,6 @@ fn main() {
         bot: &bot,
         roblox_foreground: roblox_foreground.clone(),
         settings: &store,
-        bus: &bus,
         hooks_ok,
         update: update.clone(),
     };

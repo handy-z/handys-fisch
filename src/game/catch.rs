@@ -440,17 +440,6 @@ pub fn rod_pieces(label: &str, equipped: bool, stats: &[String]) -> Vec<Piece> {
     out
 }
 
-/// Odds at 1/alert_odds or rarer, or the size / a mutation is one of the comma-separated words (spaces trimmed).
-pub fn is_rare(c: &Catch, alert_odds: i32, words: &str) -> bool {
-    if c.odds >= alert_odds {
-        return true;
-    }
-    words
-        .split(',')
-        .map(|w| w.trim_matches(' '))
-        .any(|w| !w.is_empty() && (w == c.size || c.mutations.iter().any(|m| m == w)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,17 +598,6 @@ mod tests {
         assert!(plain_catch(&c).starts_with("Shiny Squalled Seaweed · Trash\n0.1 kg · 1/9,662"));
         let c = parse_catch("You just caught a Cod at 999kg! (1/1,234,567)").unwrap();
         assert!(plain_catch(&c).starts_with("Cod · Uncommon\n999 kg · 1/1,234,567"));
-    }
-
-    #[test]
-    fn catch_is_rare_by_odds_or_word() {
-        let c = parse_catch("You just caught a Big Fallen Batfish at 11.6kg! (1/9)").unwrap();
-        assert!(!is_rare(&c, 1000, "Shiny,Sparkling"));
-        assert!(is_rare(&c, 9, "")); // odds at the threshold
-        assert!(!is_rare(&c, 10, ""));
-        assert!(is_rare(&c, 1000, "Shiny, Fallen ")); // mutation word, spaces trimmed
-        assert!(is_rare(&c, 1000, "Giant,Big")); // size word
-        assert!(!is_rare(&c, 1000, "fallen,,Bat")); // case-sensitive whole words only
     }
 
     #[test]

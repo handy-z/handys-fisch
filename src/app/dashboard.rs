@@ -13,7 +13,6 @@ use handy_sdk::ui::Tone;
 use handy_sdk::ui::d2d::add_font_file;
 use handy_sdk::ui::dashboard::{Dashboard, Span, Spec, check, page, rich_value, section, value};
 use handy_sdk::ui::overlay::StatusOverlay;
-use handy_sdk::util::event_bus::EventBus;
 use handy_sdk::util::paths::app_data_dir;
 use windows::Win32::UI::WindowsAndMessaging::SHOW_WINDOW_CMD;
 
@@ -24,7 +23,7 @@ use super::view::{
     styled, xp_spans,
 };
 use crate::game::catch::{LABEL_STROKE, rod_pieces, rod_stats};
-use crate::r#macro::bot::{Bot, RareCatch, release_inputs};
+use crate::r#macro::bot::{Bot, release_inputs};
 use handy_sdk::roblox::http::win_http_get_bytes;
 
 pub const DASHBOARD_CLASS: &str = "handys-fisch-dashboard";
@@ -35,8 +34,6 @@ pub struct DashboardDeps<'a> {
     /// written here (ForegroundWatcher + every tick), read by the bot and the hook
     pub roblox_foreground: Arc<AtomicBool>,
     pub settings: &'a SettingsStore,
-    /// RareCatch from the bot flashes the taskbar
-    pub bus: &'a EventBus,
     /// LowLevelHooks::start() installed every hook
     pub hooks_ok: bool,
     pub update: Arc<SelfUpdate>,
@@ -69,7 +66,6 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
     overlay.create();
     let pictures = FishPictures::new(app_data_dir().join("fish"), Arc::new(win_http_get_bytes));
     let font_tried_for = RefCell::new(String::new()); // Roblox exe whose font we loaded (or tried to)
-    let rare = deps.bus.inbox::<RareCatch>(1024);
     let bot = deps.bot;
     let roblox_pid = Cell::new(0u32);
     let session_due = Cell::new(Instant::now()); // when the time fishing and the /h rates refresh next
@@ -304,9 +300,6 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
                 bot.lost.load(SeqCst)
             ),
         );
-        for _ in rare.drain() {
-            ui.flash();
-        }
         overlay.set(&overlay_text(on, &v.phase, &v.stopped), on);
     });
     d.on_badge_click(|ui| {

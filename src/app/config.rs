@@ -11,10 +11,6 @@ pub struct Settings {
     pub rod: String,
     /// hold the cast until the power bar is full (else release at once)
     pub perfect_cast: bool,
-    /// flash the taskbar for catches at 1/alert_odds or rarer...
-    pub alert_odds: i32,
-    /// ...or with any of these comma-separated mutations/sizes
-    pub alert_words: String,
     /// Kept across restarts: catch popup text of the last and the rarest catch.
     pub last_catch: String,
     pub rarest: String,
@@ -26,8 +22,6 @@ impl Default for Settings {
             toggle_vk: u32::from(VK_F1.0),
             rod: String::new(),
             perfect_cast: true,
-            alert_odds: 1000,
-            alert_words: "Shiny,Sparkling".into(),
             last_catch: String::new(),
             rarest: String::new(),
         }
@@ -41,8 +35,6 @@ pub fn load_settings(file: &Path) -> Settings {
         toggle_vk: ini.get_int("toggleVk", d.toggle_vk as i32) as u32,
         rod: ini.get_str("rod", &d.rod),
         perfect_cast: ini.get_bool("perfectCast", d.perfect_cast),
-        alert_odds: ini.get_int("alertOdds", d.alert_odds).max(1),
-        alert_words: ini.get_str("alertWords", &d.alert_words),
         last_catch: ini.get_str("lastCatch", &d.last_catch),
         rarest: ini.get_str("rarest", &d.rarest),
     }
@@ -53,8 +45,6 @@ pub fn save_settings(file: &Path, s: &Settings) {
     ini.put_int("toggleVk", s.toggle_vk as i32);
     ini.put_str("rod", &s.rod);
     ini.put_bool("perfectCast", s.perfect_cast);
-    ini.put_int("alertOdds", s.alert_odds);
-    ini.put_str("alertWords", &s.alert_words);
     ini.put_str("lastCatch", &s.last_catch);
     ini.put_str("rarest", &s.rarest);
 }
@@ -80,8 +70,6 @@ mod tests {
         assert_eq!(s.toggle_vk, u32::from(VK_F1.0));
         assert!(s.rod.is_empty());
         assert!(s.perfect_cast);
-        assert_eq!(s.alert_odds, 1000);
-        assert_eq!(s.alert_words, "Shiny,Sparkling");
     }
 
     #[test]
@@ -95,8 +83,6 @@ mod tests {
             last_catch: "You just caught a Stalactite at 10.5kg! (1/4)".into(),
             rod: "Rod Of The Depths".into(),
             perfect_cast: false,
-            alert_odds: 250,
-            alert_words: "Hades' Curse, Shiny,été".into(), // UTF-8
         };
         save_settings(&ini, &s);
         assert!(load_settings(&ini) == s);
@@ -106,24 +92,12 @@ mod tests {
     }
 
     #[test]
-    fn config_clamps_fields() {
-        let dir = std::env::temp_dir().join("fisch-cfg-clamp");
-        std::fs::create_dir_all(&dir).unwrap();
-        let ini = dir.join("config.ini");
-        save_settings(&ini, &Settings::default());
-        Ini::new(&ini).put_str("alertOdds", "-3");
-        let s = load_settings(&ini);
-        assert_eq!(s.alert_odds, 1);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
     fn updater_settings_store_updates_visible_across_threads() {
         let st = SettingsStore::default();
-        assert_eq!(st.get().alert_odds, 1000);
+        assert!(st.get().perfect_cast);
         std::thread::scope(|sc| {
-            sc.spawn(|| st.update(|s| s.alert_odds = 90));
+            sc.spawn(|| st.update(|s| s.perfect_cast = false));
         });
-        assert_eq!(st.get().alert_odds, 90);
+        assert!(!st.get().perfect_cast);
     }
 }
