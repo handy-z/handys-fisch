@@ -549,7 +549,11 @@ impl GameReader {
             if parts.len() >= 64 {
                 break; // plenty to average; a huge model stays cheap
             }
-            if matches!(instance_class(p, o, c).as_deref(), Some("Part" | "MeshPart")) {
+            // every solid part kind: Piranha and Anomalocaris bodies are unions (PartOperation)
+            if matches!(
+                instance_class(p, o, c).as_deref(),
+                Some("Part" | "MeshPart" | "PartOperation" | "UnionOperation" | "WedgePart" | "CornerWedgePart")
+            ) {
                 let rgb = m.get::<[u8; 4]>(o.at(c, "BasePart.Color3")).unwrap_or_default();
                 let prim = m.get::<usize>(o.at(c, "BasePart.Primitive")).unwrap_or(0);
                 parts.push((
