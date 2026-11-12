@@ -17,7 +17,7 @@ cargo fmt --check
 
 Tests named `live_*` need a running Roblox and the network: mark them `#[ignore]` and never run them unasked.
 
-`build.cmd [test]` release-builds the app, copies `handys-fisch.exe` into this folder (from `target\release\`, else `..\target\release\`) and runs `cargo test` when `test` is given. It closes the app if it is running (never force-killed: still open after 200 s stops the build and leaves it running) and starts it again through Explorer afterwards, even when the build fails. So it restarts the user's app if it is open; the user allows running it (rebuild and restart) without asking.
+`build.cmd [test]` release-builds the app, copies `handys-fisch.exe` into this folder (from `target\release\`, else `..\target\release\`) and runs `cargo test` when `test` is given. It closes the app if it is running (asked twice to close so it releases its keys, then force-killed if still open after 3 s) and starts it again through Explorer afterwards, even when the build fails. So it restarts the user's app if it is open; the user allows running it (rebuild and restart) without asking.
 
 ## Safety (never skip)
 

@@ -13,8 +13,8 @@ shift
 goto args
 :argsdone
 
-rem A running app locks its exe: close it. Never /f: a killed app can't release the keys it holds, so one still open
-rem after its wait is left running and nothing is built. fisch lands the fish in play first (up to 200 s), so one close.
+rem A running app locks its exe: close it. Asked twice to close first (a second close skips any wait), so it can
+rem release the keys it holds; still open after 3 s, it is killed (/f), which cannot release them.
 call :close || (set "ERR=1" & goto reopen)
 
 cargo build --release || (set "ERR=1" & goto reopen)
@@ -34,12 +34,12 @@ exit /b %ERR%
 set "EXE=handys-fisch.exe"
 tasklist /fi "imagename eq %EXE%" | findstr /i /c:"%EXE%" >nul || exit /b 0
 set "OPEN=1"
-set "LIMIT=200"
-taskkill /im %EXE% >nul 2>&1
+taskkill /im %EXE% >nul 2>&1 && taskkill /im %EXE% >nul 2>&1
 set N=0
 :wait
 tasklist /fi "imagename eq %EXE%" | findstr /i /c:"%EXE%" >nul || exit /b 0
 set /a N+=1
-if %N% geq %LIMIT% (echo %EXE% did not close within %LIMIT% s, so nothing was built: close it yourself, then build again.& exit /b 1)
+if %N% equ 4 taskkill /f /im %EXE% >nul 2>&1
+if %N% geq 10 (echo %EXE% could not be closed, so nothing was built.& exit /b 1)
 ping -n 2 127.0.0.1 >nul
 goto wait
