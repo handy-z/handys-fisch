@@ -22,7 +22,7 @@ use super::view::{
     catch_spans, coin_spans, earned_spans, gps_text, hms, lifetime_spans, overlay_text, per_hour, save_warning, spans,
     styled, xp_spans,
 };
-use crate::game::catch::{Catch, LABEL_STROKE, rod_pieces, rod_stats};
+use crate::game::catch::{Catch, LABEL_STROKE, mutation_tint, rod_pieces, rod_stats};
 use crate::r#macro::bot::{Bot, release_inputs};
 use handy_sdk::roblox::http::win_http_get_bytes;
 
@@ -266,8 +266,16 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
                 game
             }
         };
-        ui.set_picture(ID_LAST, &picture(&v.last_fish));
-        ui.set_picture(ID_RAREST, &picture(&v.rarest_fish));
+        ui.set_picture(
+            ID_LAST,
+            &picture(&v.last_fish),
+            v.last_fish.as_ref().and_then(mutation_tint),
+        );
+        ui.set_picture(
+            ID_RAREST,
+            &picture(&v.rarest_fish),
+            v.rarest_fish.as_ref().and_then(mutation_tint),
+        );
         ui.set_spans(ID_COINS, &coin_spans(&v.coins));
         ui.set_spans(
             ID_LEVEL,

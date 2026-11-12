@@ -29,6 +29,16 @@ pub struct Catch {
     pub icon: String,
 }
 
+/// The color (0xRRGGBB, from the wiki) to recolor a catch's picture with, as the game recolors a mutated fish: the
+/// mutation word nearest the species ("Shiny Hexed Xiphactinus": Hexed), since the stacking attributes (Shiny,
+/// Sparkling) come first and are near-white. None for an unmutated catch or a mutation the wiki has no color for.
+pub fn mutation_tint(c: &Catch) -> Option<u32> {
+    let m = c.mutations.last()?;
+    let known = MUTATIONS.iter().find(|k| k.name == m)?;
+    // two-color mutations ("89daff ffffff"): the first
+    u32::from_str_radix(known.color.split(' ').next()?, 16).ok()
+}
+
 /// The number in "rbxassetid://123"; None for anything else (a 3D-model catch's empty icon, or junk read after a
 /// Roblox update moved the field).
 pub fn asset_id(s: &str) -> Option<&str> {
@@ -631,6 +641,16 @@ mod tests {
         assert_eq!(c.value, Some(171.0));
         let c = parse_catch("You just caught a Brandnewfish at 1kg! (1/3)").unwrap(); // not on the wiki: no info
         assert!(c.rarity.is_empty() && c.value.is_none());
+    }
+
+    #[test]
+    fn catch_tint_is_the_mutation_nearest_the_species() {
+        let c = parse_catch("You just caught a Big Abyssal Floppy at 11.4kg! (1/29)").unwrap();
+        assert_eq!(mutation_tint(&c), Some(0x0c0fd4)); // "Big" is a size, not a mutation
+        let c = parse_catch("You just caught a Shiny Hexed Xiphactinus at 188.1kg! (1/8,913)").unwrap();
+        assert_eq!(mutation_tint(&c), Some(0xa60000));
+        let c = parse_catch("You just caught a Floppy at 11.4kg! (1/29)").unwrap();
+        assert_eq!(mutation_tint(&c), None);
     }
 
     #[test]
