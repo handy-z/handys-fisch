@@ -45,7 +45,8 @@ powershell -NoProfile -Command "$h = (Get-FileHash -Algorithm SHA256 -LiteralPat
 
 echo [7/8] committing, tagging and pushing v%V%
 git add Cargo.toml Cargo.lock || goto fail
-git commit -m "Release v%V%" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" || goto fail
+rem Releasing the version Cargo.toml already has changes nothing: tag the current commit then.
+git diff --cached --quiet || git commit -m "Release v%V%" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" || goto fail
 git tag "v%V%" || goto fail
 git push || exit /b 1
 git push origin "v%V%" || exit /b 1
