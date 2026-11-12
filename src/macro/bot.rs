@@ -772,6 +772,12 @@ impl Engine<'_> {
         if self.bot.on.load(SeqCst) {
             self.bot.macro_xp.fetch_add(xp.unwrap_or(0), SeqCst);
         }
+        {
+            let mut v = self.bot.view.lock().unwrap();
+            if v.last_catch == text {
+                v.last_fish.clone_from(&c); // now with its XP; a newer catch already replaced it otherwise
+            }
+        }
         let log = self.bot.catch_log.clone();
         self.append_log(&log, CATCH_HEADER, catch_line(text, &c));
     }

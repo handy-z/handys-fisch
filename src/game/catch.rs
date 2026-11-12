@@ -283,7 +283,8 @@ pub fn odds_color(odds: i32) -> String {
 
 /// "Big " "Fallen " "Bigeye Trevally" (bold, in their size, mutation and rarity colors from the wiki), " · "
 /// "Legendary" in the tier's color, "\n", "15,505" (bold grey) " kg · " "1/9,662" (bold, odds_color), the game's parts
-/// outlined as the catch line is (CATCH_STROKE); then " · " "≈ 612 C$" (the shops' price green). Numbers are grouped
+/// outlined as the catch line is (CATCH_STROKE); then " · " "≈ 612 C$" (the shops' price green) and, once the XP popup
+/// was read, " · " "+8,535 XP" (its gold). Numbers are grouped
 /// like the game; unknown parts and the Common tier left out.
 pub fn catch_pieces(c: &Catch) -> Vec<Piece> {
     // As the game's catch line styles it (its rich text, read live): name words bold in their size, mutation and
@@ -339,6 +340,16 @@ pub fn catch_pieces(c: &Catch) -> Vec<Piece> {
         out.push(piece(
             format!("≈ {} C$", with_commas((v as i64).to_string())),
             "a2eaa6",
+            false,
+            false,
+            "",
+        ));
+    }
+    if let Some(xp) = c.xp {
+        out.push(piece(" · ", "", false, false, ""));
+        out.push(piece(
+            format!("+{} XP", with_commas(xp.to_string())),
+            "ffd43a",
             false,
             false,
             "",
@@ -621,6 +632,8 @@ mod tests {
         assert!(plain_catch(&c).ends_with(" · Legendary\n11.6 kg · 1/9 · ≈ 612 C$")); // the tier follows the name
         let p = catch_pieces(&c);
         assert!(p.iter().any(|x| x.text == "Legendary" && x.color == "f0b56d"));
+        c.xp = Some(8535);
+        assert!(plain_catch(&c).ends_with("1/9 · ≈ 612 C$ · +8,535 XP")); // after the XP popup
     }
 
     #[test]
