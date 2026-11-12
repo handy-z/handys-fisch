@@ -514,6 +514,7 @@ struct Engine<'a> {
     lost_streak: i32,
     stop_reason: String, // why the watchdog turned the macro off
     reel_log: ReelLog,
+    trace: String, // this reel's rows for reels\<time>.csv
     reel_t0: Instant,
     reel_rod: String, // rod used for the reel being recorded
     last_progress: f32,
@@ -598,6 +599,7 @@ impl Bot {
             lost_streak: 0,
             stop_reason: String::new(),
             reel_log: ReelLog::default(),
+            trace: String::new(),
             reel_t0: now,
             reel_rod: String::new(),
             last_progress: 0.0,
@@ -645,8 +647,32 @@ impl Engine<'_> {
         }
         if self.reel_log.fish.len() >= 50 {
             self.write_reel(&reel_stats(&self.reel_log), won);
+            self.write_trace(won);
         }
         self.reel_log = ReelLog::default();
+        self.trace.clear();
+    }
+
+    /// The whole reel, one row per read, to reels\<time>-<outcome>-w<bar width>.csv: what the reel control is tuned
+    /// from. Best effort: a failed write loses only this trace.
+    // shortcut: every reel is kept (~130 KB each), delete the folder by hand; cap it if it stays on after tuning
+    fn write_trace(&self, won: bool) {
+        let dir = self.bot.catch_log.parent().unwrap_or(Path::new("")).join("reels");
+        let _ = std::fs::create_dir_all(&dir);
+        let name = format!(
+            "{}-{}-w{:.2}.csv",
+            stamp().replace(':', "").replace(' ', "-"),
+            if won { "caught" } else { "lost" },
+            self.reel_log.width
+        );
+        let _ = std::fs::write(
+            dir.join(name),
+            format!(
+                "t,bar,fish,progress,held
+{}",
+                self.trace
+            ),
+        );
     }
 
     fn set_view(&self, rod: &str, phase: &str) {
@@ -770,6 +796,7 @@ impl Engine<'_> {
                 self.prev = None;
                 (self.bar_v, self.fish_v, self.progress_v) = (0.0, 0.0, 0.0);
                 self.reel_log = ReelLog::default();
+                self.trace.clear();
             }
             self.reeling = true;
             self.last_progress = r.progress;
@@ -783,6 +810,15 @@ impl Engine<'_> {
                 let t = (now - self.reel_t0).as_secs_f32();
                 self.reel_log.bar.push((t, r.bar));
                 self.reel_log.fish.push((t, r.fish));
+                // held: Space as decided on the last read, so the key's state over the time since then
+                self.trace += &format!(
+                    "{t:.4},{:.5},{:.5},{:.4},{}
+",
+                    r.bar,
+                    r.fish,
+                    r.progress,
+                    u8::from(self.held)
+                );
             }
             if let Some(prev) = &self.prev {
                 let dt = (now - prev.at).as_secs_f32();
@@ -1055,6 +1091,7 @@ impl Engine<'_> {
                 self.hold(false);
                 self.reeling = false;
                 self.reel_log = ReelLog::default();
+                self.trace.clear();
                 let phase = match &s {
                     None => "Not in game".to_owned(),
                     Some(s) if !bot.on.load(SeqCst) => format!(
