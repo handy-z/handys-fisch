@@ -4,7 +4,7 @@ handys-fisch (repo `handys-fisch`): a Windows-only app that reads Roblox process
 
 ## SDK
 
-The shared library comes from the `handys-sdk` repo (`handy-sdk` in `Cargo.toml`, a git dependency on `main`; the repo is private, git's credential manager authenticates). When this folder sits in the shared development folder, the root `.cargo/config.toml` patches it to `../sdk` and builds into the shared `../target`. A change that needs a new SDK feature lands in `handys-sdk` first. Nothing game-specific goes in the SDK.
+The shared library comes from the `handys-sdk` repo (`handy-sdk` in `Cargo.toml`, a git dependency on `main` of the public repo). When this folder sits in the shared development folder, the root `.cargo/config.toml` patches it to `../sdk` and builds into the shared `../target`. A change that needs a new SDK feature lands in `handys-sdk` first. Nothing game-specific goes in the SDK.
 
 ## Build and test
 

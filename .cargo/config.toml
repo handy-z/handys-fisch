@@ -2,6 +2,6 @@
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
 
-# The handys-sdk repo is private; git's credential manager authenticates.
+# Fetch the handys-sdk git dependency with the git CLI (uses your git setup: proxy, credentials).
 [net]
 git-fetch-with-cli = true
