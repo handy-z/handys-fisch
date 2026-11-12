@@ -22,7 +22,6 @@ Tests named `live_*` need a running Roblox and the network: mark them `#[ignore]
 ## Safety (never skip)
 
 - Never launch `handys-fisch.exe` while it could act in the user's game, unless the user says so.
-- Never send input to Roblox in a public match.
 - Never change input timing the app relies on (hold lengths, gaps, sending only while Roblox is foreground) and never leave keys held after a crash, close or toggle-off.
 - Low-level hook callbacks stay O(1) and non-blocking (atomics only).
 
