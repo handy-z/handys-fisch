@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use handy_sdk::app::args::arg_value;
 use handy_sdk::app::crash_guard::on_crash;
-use handy_sdk::app::self_update::{UpdateStatus, update_on_startup};
+use handy_sdk::app::self_update::{SelfUpdate, Startup};
 use handy_sdk::app::session_reader::SessionReader;
 use handy_sdk::app::single_instance::SingleInstance;
 use handy_sdk::app::status_snapshot::{snapshot_allowed, status_line, wait_for};
@@ -91,11 +91,11 @@ fn main() {
     on_crash(release_inputs); // a crash mid-reel must not leave Space held down in Roblox
     // Only builds made by release.cmd update themselves (dev builds and build.cmd never do). Skipped while another
     // copy runs: its exe is in use and it would be replaced under it.
-    let update = (option_env!("HANDY_RELEASE").is_some() && !SingleInstance::is_running(MUTEX))
-        .then(|| update_on_startup("handy-z", "handys-fisch", env!("CARGO_PKG_VERSION")));
-    if update == Some(UpdateStatus::Restarting) {
-        return; // the new version is starting; exit before anything else runs
-    }
+    let enabled = option_env!("HANDY_RELEASE").is_some() && !SingleInstance::is_running(MUTEX);
+    let update = match SelfUpdate::start("handy-z", "handys-fisch", env!("CARGO_PKG_VERSION"), enabled) {
+        Startup::Restarting => return, // an update staged earlier is starting; exit before anything else runs
+        Startup::Running(u) => u,
+    };
     let mut instance = SingleInstance::new(MUTEX, DASHBOARD_CLASS);
     if !instance.acquire() {
         return; // brought the running copy's window up
@@ -140,7 +140,7 @@ fn main() {
         settings: &store,
         bus: &bus,
         hooks_ok,
-        update,
+        update: update.clone(),
     };
     let rc = run_dashboard(&deps, SW_SHOWDEFAULT);
 
@@ -151,5 +151,6 @@ fn main() {
     instance.release();
     drop(updater_thread);
     drop(timer);
+    update.finish(); // after the mutex is released: starts the staged update
     std::process::exit(rc);
 }

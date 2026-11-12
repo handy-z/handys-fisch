@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::SeqCst;
 use std::time::{Duration, Instant};
 
-use handy_sdk::app::self_update::{UpdateStatus, badge_text};
+use handy_sdk::app::self_update::{SelfUpdate, UpdateState};
 use handy_sdk::app::updater_thread::{AppStatus, Updater, status_name, status_tone};
 use handy_sdk::input::focus::{ForegroundWatcher, activate_process_window};
 use handy_sdk::input::key::vk_name;
@@ -39,8 +39,7 @@ pub struct DashboardDeps<'a> {
     pub bus: &'a EventBus,
     /// LowLevelHooks::start() installed every hook
     pub hooks_ok: bool,
-    /// what the startup self-update did; None when it did not run
-    pub update: Option<UpdateStatus>,
+    pub update: Arc<SelfUpdate>,
 }
 
 const ID_ROD: i32 = 2;
@@ -82,7 +81,7 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
 
     let d = Dashboard::new(Spec {
         title: "handy's fisch".into(),
-        badge: badge_text(env!("CARGO_PKG_VERSION"), deps.update),
+        badge: deps.update.badge().text,
         window_class: DASHBOARD_CLASS.into(),
         rows: vec![
             page("Fishing"),
@@ -118,6 +117,8 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
         ..Default::default()
     });
     d.on_tick(|ui| {
+        let b = deps.update.badge();
+        ui.set_badge(&b.text, b.tone, &b.tip);
         if quit_by
             .get()
             .is_some_and(|by| bot.ready_to_quit.load(SeqCst) || Instant::now() >= by)
@@ -307,6 +308,16 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             ui.flash();
         }
         overlay.set(&overlay_text(on, &v.phase, &v.stopped), on);
+    });
+    d.on_badge_click(|ui| {
+        if matches!(deps.update.state(), UpdateState::Ready { .. }) && deps.bot.on.load(SeqCst) {
+            return ui.flash(); // not while the app is working
+        }
+        if deps.update.request_restart() {
+            ui.close();
+        } else {
+            handy_sdk::ui::open_url(&deps.update.release_url());
+        }
     });
     d.on_check(|_, id, checked| {
         if id == ID_PERFECT {
