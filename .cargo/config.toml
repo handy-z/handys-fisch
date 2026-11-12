@@ -1,0 +1,7 @@
+# Static CRT: each exe runs with nothing to install.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# The handys-sdk repo is private; git's credential manager authenticates.
+[net]
+git-fetch-with-cli = true

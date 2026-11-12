@@ -1,0 +1,9 @@
+{
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": false,
+    "clangd-lsp@claude-plugins-official": false,
+    "pyright-lsp@claude-plugins-official": false,
+    "frontend-design@claude-plugins-official": false,
+    "impeccable@impeccable": false
+  }
+}
