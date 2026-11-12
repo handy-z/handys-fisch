@@ -26,7 +26,7 @@ git rev-parse -q --verify "refs/tags/v%V%" >nul && (echo tag v%V% already exists
 git ls-remote --tags origin "refs/tags/v%V%" | findstr "^" >nul && (echo tag v%V% already exists on origin& exit /b 1)
 
 echo [4/8] setting version %V% in Cargo.toml
-powershell -NoProfile -Command "$p = 'Cargo.toml'; $t = [IO.File]::ReadAllText($p); $t = ([regex]'(?m)^version = \"[^\"]*\"').Replace($t, 'version = \"' + $env:V + '\"', 1); [IO.File]::WriteAllText($p, $t, (New-Object Text.UTF8Encoding $false))" || (echo editing Cargo.toml failed& git checkout -- Cargo.toml& exit /b 1)
+powershell -NoProfile -Command "$q = [char]34; $p = 'Cargo.toml'; $t = [IO.File]::ReadAllText($p); $t = ([regex]('(?m)^version = ' + $q + '[^' + $q + ']*' + $q)).Replace($t, 'version = ' + $q + $env:V + $q, 1); [IO.File]::WriteAllText($p, $t, (New-Object Text.UTF8Encoding $false))" || (echo editing Cargo.toml failed& git checkout -- Cargo.toml& exit /b 1)
 
 echo [5/8] building and testing (HANDY_RELEASE=1)
 set HANDY_RELEASE=1
