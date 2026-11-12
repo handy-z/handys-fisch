@@ -763,11 +763,15 @@ impl Engine<'_> {
     }
 
     /// ~400 ms later, with the XP popup: XP, log
-    fn finish_catch(&mut self, text: &str, xp: Option<i64>, icon: Option<String>) {
+    fn finish_catch(&mut self, text: &str, xp: Option<i64>, look: Option<(Option<String>, Option<u32>)>) {
         let mut c = parse_catch(text);
         if let Some(c) = &mut c {
             c.xp = xp;
-            c.icon = icon.unwrap_or_default();
+            if let Some((icon, tint)) = look {
+                c.icon = icon.unwrap_or_default();
+                c.tint = tint;
+                c.looked = true;
+            }
         }
         self.bot.xp_gained.fetch_add(xp.unwrap_or(0), SeqCst);
         if self.bot.on.load(SeqCst) {
@@ -1016,8 +1020,8 @@ impl Engine<'_> {
                 if let Some((text, popup)) = r.take_catch_popup().filter(|(t, _)| !is_item_popup(t)) {
                     if let Some((t, _, prev)) = pending_catch.take() {
                         let xp = r.catch_xp();
-                        let icon = r.catch_icon(prev);
-                        self.finish_catch(&t, xp, icon);
+                        let look = r.catch_look(prev);
+                        self.finish_catch(&t, xp, look);
                     }
                     self.count_catch(&text);
                     pending_catch = Some((text, now, popup));
@@ -1054,8 +1058,8 @@ impl Engine<'_> {
                 if catch_settled(age, xp.is_some())
                     && let Some((text, _, popup)) = pending_catch.take()
                 {
-                    let icon = reader.as_mut().and_then(|r| r.catch_icon(popup));
-                    self.finish_catch(&text, xp, icon);
+                    let look = reader.as_mut().and_then(|r| r.catch_look(popup));
+                    self.finish_catch(&text, xp, look);
                 }
             }
             let dt = now - prev_tick;
@@ -1141,8 +1145,8 @@ impl Engine<'_> {
         // A second close doesn't wait for the XP: log the catch without it rather than lose the row.
         if let Some((text, _, popup)) = pending_catch.take() {
             let xp = reader.as_mut().and_then(|r| r.catch_xp());
-            let icon = reader.as_mut().and_then(|r| r.catch_icon(popup));
-            self.finish_catch(&text, xp, icon);
+            let look = reader.as_mut().and_then(|r| r.catch_look(popup));
+            self.finish_catch(&text, xp, look);
         }
         // shortcut: lines a file still refuses at exit (open in Excel all along) are lost; a pending file would keep them.
         for (csv, u) in &self.unwritten {

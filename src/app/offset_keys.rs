@@ -21,10 +21,14 @@ static KEYS: LazyLock<OffsetKeys> = LazyLock::new(|| {
             "GuiObject.Text",
             "GuiObject.Visible",
             "GuiObject.LayoutOrder",
+            "GuiObject.Image",
             "Misc.Value",
             "Misc.StringLength",
             "BasePart.Primitive",
+            "BasePart.Color3",
+            "BasePart.Transparency",
             "Primitive.Position",
+            "Primitive.Material",
         ],
     )
 });

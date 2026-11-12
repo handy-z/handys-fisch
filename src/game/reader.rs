@@ -9,7 +9,7 @@ use handy_sdk::roblox::read::{
     number_value, object_value, parent_of, part_position, player_gui, string_value,
 };
 
-use super::catch::{asset_id, parse_xp};
+use super::catch::{asset_id, model_tint, parse_xp};
 
 // Fisch rod values/state (IntValue), recorded by tools/debug/fish_record.py.
 pub const ROD_REEL_RESET: i64 = 2;
@@ -518,10 +518,11 @@ impl GameReader {
         None
     }
 
-    /// The game's flat icon in a catch popup from take_catch_popup (catch/fih/icon), "rbxassetid://123". None for fish
-    /// it shows as a 3D model instead (most fish), or once that popup is gone. Set a moment after the text: read it
-    /// with the XP.
-    pub fn catch_icon(&mut self, popup: usize) -> Option<String> {
+    /// How a catch popup from take_catch_popup shows the catch: its flat icon (catch/fih/icon, "rbxassetid://123"; None
+    /// for fish shown as a 3D model, most of them) and the color the game recolored that model to (model_tint; None
+    /// unless it marks it recolored with a "<mutation>template" part). None once the popup is gone. Set a moment after
+    /// the text: read it with the XP.
+    pub fn catch_look(&mut self, popup: usize) -> Option<(Option<String>, Option<u32>)> {
         if !self.resolve_player() {
             return None;
         }
@@ -531,8 +532,39 @@ impl GameReader {
         if !self.parent_is(popup, ann) {
             return None; // freed: its memory may hold anything now
         }
-        let icon = child_by_name(p, o, child_by_name(p, o, popup, "fih"), "icon");
-        gui_image(p, o, icon).filter(|s| asset_id(s).is_some())
+        let fih = child_by_name(p, o, popup, "fih");
+        let icon = gui_image(p, o, child_by_name(p, o, fih, "icon")).filter(|s| asset_id(s).is_some());
+        let model = child_by_name(p, o, child_by_name(p, o, fih, "vp"), "viewmodel");
+        let kids = children(p, o, model);
+        let recolored = kids
+            .iter()
+            .any(|&c| instance_name(p, o, c).is_some_and(|n| n.ends_with("template")));
+        if !recolored {
+            return Some((icon, None));
+        }
+        let m: &dyn Memory = p;
+        let mut parts = Vec::new();
+        let mut stack = kids;
+        while let Some(c) = stack.pop() {
+            if parts.len() >= 64 {
+                break; // plenty to average; a huge model stays cheap
+            }
+            if matches!(instance_class(p, o, c).as_deref(), Some("Part" | "MeshPart")) {
+                let rgb = m.get::<[u8; 4]>(o.at(c, "BasePart.Color3")).unwrap_or_default();
+                let prim = m.get::<usize>(o.at(c, "BasePart.Primitive")).unwrap_or(0);
+                parts.push((
+                    u32::from_be_bytes([0, rgb[0], rgb[1], rgb[2]]),
+                    m.get::<f32>(o.at(c, "BasePart.Transparency")).unwrap_or(1.0),
+                    if prim == 0 {
+                        0
+                    } else {
+                        m.get::<u16>(o.at(prim, "Primitive.Material")).unwrap_or(0)
+                    },
+                ));
+            }
+            stack.extend(children(p, o, c));
+        }
+        Some((icon, model_tint(&parts)))
     }
 
     fn parent_is(&self, inst: usize, parent: usize) -> bool {

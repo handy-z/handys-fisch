@@ -27,6 +27,41 @@ pub struct Catch {
     pub xp: Option<i64>,
     /// the game's own flat icon from the catch popup, "rbxassetid://123"; empty for fish it shows as a 3D model
     pub icon: String,
+    /// the color (0xRRGGBB) the game recolored the fish's 3D model to (model_tint); None when it didn't
+    pub tint: Option<u32>,
+    /// icon and tint were read from the catch popup (else they are unknown, not absent)
+    pub looked: bool,
+}
+
+/// Roblox's Enum.Material.Neon: drawn glowing, far brighter than its color
+pub const NEON: u16 = 288;
+
+/// The color the game recolored a mutated catch's 3D model to, from its parts (0xRRGGBB, transparency, material):
+/// the average of the visible ones, near-black details (eyes) left out. Each part gets its own shade ((43, 0, 135) to
+/// (49, 0, 155) on an Abyssal fish), so the average is the one color a flat picture can take. Neon parts glow on
+/// screen: brightened until the strongest channel is full. None when no part is visible.
+pub fn model_tint(parts: &[(u32, f32, u16)]) -> Option<u32> {
+    let (mut sum, mut n, mut neon) = ([0u32; 3], 0, false);
+    for &(rgb, transparency, material) in parts {
+        let [_, r, g, b] = rgb.to_be_bytes();
+        if transparency >= 0.99 || r.max(g).max(b) < 30 {
+            continue;
+        }
+        for (s, c) in sum.iter_mut().zip([r, g, b]) {
+            *s += u32::from(c);
+        }
+        n += 1;
+        neon |= material == NEON;
+    }
+    if n == 0 {
+        return None;
+    }
+    let mut c = sum.map(|s| s / n);
+    let top = c.iter().copied().max().unwrap_or(0);
+    if neon && top > 0 {
+        c = c.map(|x| x * 255 / top);
+    }
+    Some(c[0] << 16 | c[1] << 8 | c[2])
 }
 
 /// The color (0xRRGGBB, from the wiki) to recolor a catch's picture with, as the game recolors a mutated fish: the
@@ -641,6 +676,26 @@ mod tests {
         assert_eq!(c.value, Some(171.0));
         let c = parse_catch("You just caught a Brandnewfish at 1kg! (1/3)").unwrap(); // not on the wiki: no info
         assert!(c.rarity.is_empty() && c.value.is_none());
+    }
+
+    #[test]
+    fn catch_model_tint_like_the_game_draws_it() {
+        // a Big Abyssal Floppy's visible parts, read live: Neon, each its own shade; an invisible hitbox; black eyes
+        let parts = [
+            (0x2c008b, 0.0, NEON),
+            (0x00159f, 0.0, NEON),
+            (0x2f0096, 0.0, NEON),
+            (0x2b0087, 0.0, NEON),
+            (0xa3a2a5, 1.0, 256),
+            (0x000000, 0.0, 256),
+        ];
+        assert_eq!(model_tint(&parts), Some(0x3a08ff)); // average (33, 5, 145), glowing: full blue
+        // a Hexed one: Metal (1088) red, not glowing, so not brightened
+        assert_eq!(
+            model_tint(&[(0x610000, 0.0, 1088), (0xc80000, 0.0, 1088)]),
+            Some(0x940000)
+        );
+        assert_eq!(model_tint(&[(0xa3a2a5, 1.0, 256)]), None);
     }
 
     #[test]

@@ -266,16 +266,13 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
                 game
             }
         };
-        ui.set_picture(
-            ID_LAST,
-            &picture(&v.last_fish),
-            v.last_fish.as_ref().and_then(mutation_tint),
-        );
-        ui.set_picture(
-            ID_RAREST,
-            &picture(&v.rarest_fish),
-            v.rarest_fish.as_ref().and_then(mutation_tint),
-        );
+        // the game's own recolor when the popup was read, else the mutation's wiki color (a catch restored at startup)
+        let tint = |f: &Option<Catch>| {
+            f.as_ref()
+                .and_then(|f| if f.looked { f.tint } else { mutation_tint(f) })
+        };
+        ui.set_picture(ID_LAST, &picture(&v.last_fish), tint(&v.last_fish));
+        ui.set_picture(ID_RAREST, &picture(&v.rarest_fish), tint(&v.rarest_fish));
         ui.set_spans(ID_COINS, &coin_spans(&v.coins));
         ui.set_spans(
             ID_LEVEL,
