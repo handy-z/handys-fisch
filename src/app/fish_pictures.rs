@@ -5,6 +5,8 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use handy_sdk::util::thread::StopThread;
 
+use crate::game::catch::asset_id;
+
 // Images need the raw body (HttpResult::body is lossy text): (status, body), status 0 on any failure.
 pub type GetBytes = Arc<dyn Fn(&str) -> (i32, Vec<u8>) + Send + Sync>;
 
@@ -24,11 +26,18 @@ pub fn picture_query_url(species: &str) -> String {
     )
 }
 
-/// The picture's URL from that answer; None when the page has none (or the species has no page).
+/// Roblox's public thumbnail API for an image asset (a game icon): answers with its PNG's URL as "imageUrl".
+pub fn asset_query_url(id: &str) -> String {
+    format!("https://thumbnails.roblox.com/v1/assets?assetIds={id}&size=420x420&format=Png")
+}
+
+/// The picture's URL in either answer: the wiki's "source", the thumbnail API's "imageUrl". None when it has none
+/// (the species has no page or picture; the thumbnail is still being made or was refused).
 pub fn thumbnail_url(json: &str) -> Option<String> {
-    const KEY: &str = "\"source\":\"";
-    let at = json.find(KEY)?;
-    let url: String = json[at + KEY.len()..]
+    let (at, key) = ["\"source\":\"", "\"imageUrl\":\""]
+        .iter()
+        .find_map(|k| json.find(k).map(|at| (at, k.len())))?;
+    let url: String = json[at + key..]
         .chars()
         .take_while(|&c| c != '"')
         .filter(|&c| c != '\\')
@@ -78,7 +87,9 @@ impl Shared {
                 }
             };
             // shortcut: a failed download is not retried until the app restarts, retry on a timer if the wiki flakes often.
-            let (status, page) = (self.get)(&picture_query_url(&species));
+            // a game icon ("rbxassetid://123") from Roblox, else the species' picture from the wiki
+            let query = asset_id(&species).map_or_else(|| picture_query_url(&species), asset_query_url);
+            let (status, page) = (self.get)(&query);
             let url = if status == 200 {
                 thumbnail_url(&String::from_utf8_lossy(&page))
             } else {
@@ -134,8 +145,8 @@ impl FishPictures {
         }
     }
 
-    /// The species' picture file; empty while it downloads, or when the wiki has none. Asks the network once per
-    /// species.
+    /// The picture file for a species (from the wiki) or a game icon ("rbxassetid://123", from Roblox); empty while it
+    /// downloads, or when there is none. Asks the network once per name.
     pub fn get(&self, species: &str) -> PathBuf {
         if species.is_empty() {
             return PathBuf::new();
@@ -193,6 +204,18 @@ mod tests {
             Some("https://static.wikitide.net/fischwiki/thumb/7/7e/Mackerel.png/192px-Mackerel.png")
         );
         assert!(thumbnail_url(r#"{"query":{"pages":{"-1":{"title":"Nofish","missing":""}}}}"#).is_none());
+        // Roblox's thumbnail API, for a game icon
+        assert_eq!(
+            thumbnail_url(
+                r#"{"data":[{"targetId":1,"state":"Completed","imageUrl":"https://tr.rbxcdn.com/abc/420/420/Image/Png/noFilter"}]}"#
+            ),
+            Some("https://tr.rbxcdn.com/abc/420/420/Image/Png/noFilter".into())
+        );
+        assert!(thumbnail_url(r#"{"data":[{"targetId":1,"state":"Pending","imageUrl":null}]}"#).is_none());
+        assert_eq!(
+            asset_query_url("110074220763561"),
+            "https://thumbnails.roblox.com/v1/assets?assetIds=110074220763561&size=420x420&format=Png"
+        );
     }
 
     #[test]

@@ -25,6 +25,15 @@ pub struct Catch {
     pub value: Option<f64>,
     /// from the game's "+45xp" popup, filled in by the bot
     pub xp: Option<i64>,
+    /// the game's own flat icon from the catch popup, "rbxassetid://123"; empty for fish it shows as a 3D model
+    pub icon: String,
+}
+
+/// The number in "rbxassetid://123"; None for anything else (a 3D-model catch's empty icon, or junk read after a
+/// Roblox update moved the field).
+pub fn asset_id(s: &str) -> Option<&str> {
+    s.strip_prefix("rbxassetid://")
+        .filter(|d| !d.is_empty() && d.len() <= 20 && d.bytes().all(|b| b.is_ascii_digit()))
 }
 
 // Text outline colors as the game draws them (a UIStroke, or the label's own TextStroke), read live with
@@ -622,6 +631,15 @@ mod tests {
         assert_eq!(c.value, Some(171.0));
         let c = parse_catch("You just caught a Brandnewfish at 1kg! (1/3)").unwrap(); // not on the wiki: no info
         assert!(c.rarity.is_empty() && c.value.is_none());
+    }
+
+    #[test]
+    fn catch_asset_id_only_from_an_asset_uri() {
+        assert_eq!(asset_id("rbxassetid://110074220763561"), Some("110074220763561"));
+        assert!(asset_id("").is_none() && asset_id("rbxassetid://").is_none());
+        assert!(
+            asset_id("rbxassetid://12a").is_none() && asset_id("http://www.roblox.com/asset/?id=77043219").is_none()
+        );
     }
 
     #[test]

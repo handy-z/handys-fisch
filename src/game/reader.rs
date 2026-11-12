@@ -5,11 +5,11 @@ use handy_sdk::app::updater_thread::Session;
 use handy_sdk::roblox::instance::{child_by_class, child_by_name, children, data_model, instance_class, instance_name};
 use handy_sdk::roblox::memory::Memory;
 use handy_sdk::roblox::read::{
-    CachedPath, VisibleProbe, character_of, gui_layout_order, gui_size, gui_text, int_value, local_player,
+    CachedPath, VisibleProbe, character_of, gui_image, gui_layout_order, gui_size, gui_text, int_value, local_player,
     number_value, object_value, parent_of, part_position, player_gui, string_value,
 };
 
-use super::catch::parse_xp;
+use super::catch::{asset_id, parse_xp};
 
 // Fisch rod values/state (IntValue), recorded by tools/debug/fish_record.py.
 pub const ROD_REEL_RESET: i64 = 2;
@@ -483,7 +483,7 @@ impl GameReader {
 
     /// Text of a catch popup (hud/safezone/announcements/catch, one per catch) not returned before; popups already up
     /// on the first call are skipped. The fish is only revealed here: while reeling the GUI shows a generic icon.
-    pub fn take_catch_popup(&mut self) -> Option<String> {
+    pub fn take_catch_popup(&mut self) -> Option<(String, usize)> {
         if !self.resolve_player() {
             return None;
         }
@@ -510,12 +510,29 @@ impl GameReader {
             match gui_text(p, o, child_by_name(p, o, c, "Main")) {
                 Some(text) if !text.is_empty() => {
                     seen.push(c);
-                    return Some(text);
+                    return Some((text, c));
                 }
                 _ => continue, // just created: filled in a moment later, retry next call
             }
         }
         None
+    }
+
+    /// The game's flat icon in a catch popup from take_catch_popup (catch/fih/icon), "rbxassetid://123". None for fish
+    /// it shows as a 3D model instead (most fish), or once that popup is gone. Set a moment after the text: read it
+    /// with the XP.
+    pub fn catch_icon(&mut self, popup: usize) -> Option<String> {
+        if !self.resolve_player() {
+            return None;
+        }
+        let sess = self.sess.clone();
+        let (p, o) = (&sess.proc, &sess.offsets);
+        let ann = self.announcements.get(p, o, self.gui);
+        if !self.parent_is(popup, ann) {
+            return None; // freed: its memory may hold anything now
+        }
+        let icon = child_by_name(p, o, child_by_name(p, o, popup, "fih"), "icon");
+        gui_image(p, o, icon).filter(|s| asset_id(s).is_some())
     }
 
     fn parent_is(&self, inst: usize, parent: usize) -> bool {

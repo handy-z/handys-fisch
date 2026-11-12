@@ -763,10 +763,11 @@ impl Engine<'_> {
     }
 
     /// ~400 ms later, with the XP popup: XP, log
-    fn finish_catch(&mut self, text: &str, xp: Option<i64>) {
+    fn finish_catch(&mut self, text: &str, xp: Option<i64>, icon: Option<String>) {
         let mut c = parse_catch(text);
         if let Some(c) = &mut c {
             c.xp = xp;
+            c.icon = icon.unwrap_or_default();
         }
         self.bot.xp_gained.fetch_add(xp.unwrap_or(0), SeqCst);
         if self.bot.on.load(SeqCst) {
@@ -775,7 +776,10 @@ impl Engine<'_> {
         {
             let mut v = self.bot.view.lock().unwrap();
             if v.last_catch == text {
-                v.last_fish.clone_from(&c); // now with its XP; a newer catch already replaced it otherwise
+                v.last_fish.clone_from(&c); // now with its XP and icon; a newer catch already replaced it otherwise
+            }
+            if v.rarest == text {
+                v.rarest_fish.clone_from(&c);
             }
         }
         let log = self.bot.catch_log.clone();
@@ -960,7 +964,7 @@ impl Engine<'_> {
             v.rarest = cfg.rarest;
             self.rarest_odds = v.rarest_fish.as_ref().map_or(0, |f| f.odds);
         }
-        let mut pending_catch: Option<(String, Instant)> = None; // popup text, when it was seen
+        let mut pending_catch: Option<(String, Instant, usize)> = None; // popup text, when it was seen, the popup
         let mut reel_missing = Sustained::default();
         let mut warned = false;
         while !stop.load(Relaxed) {
@@ -1009,13 +1013,14 @@ impl Engine<'_> {
                 if let Some(lv) = r.level_progress() {
                     bot.view.lock().unwrap().level = level_pieces(lv.level, lv.xp);
                 }
-                if let Some(text) = r.take_catch_popup().filter(|t| !is_item_popup(t)) {
-                    if let Some((t, _)) = pending_catch.take() {
+                if let Some((text, popup)) = r.take_catch_popup().filter(|(t, _)| !is_item_popup(t)) {
+                    if let Some((t, _, prev)) = pending_catch.take() {
                         let xp = r.catch_xp();
-                        self.finish_catch(&t, xp);
+                        let icon = r.catch_icon(prev);
+                        self.finish_catch(&t, xp, icon);
                     }
                     self.count_catch(&text);
-                    pending_catch = Some((text, now));
+                    pending_catch = Some((text, now, popup));
                 }
             }
             if let Some(r) = reader.as_mut()
@@ -1039,7 +1044,7 @@ impl Engine<'_> {
                     v.player = p;
                 }
             }
-            if let Some((_, at)) = &pending_catch {
+            if let Some((_, at, _)) = &pending_catch {
                 let age = now - *at;
                 let xp = if age >= MS(400) {
                     reader.as_mut().and_then(|r| r.catch_xp())
@@ -1047,9 +1052,10 @@ impl Engine<'_> {
                     None
                 };
                 if catch_settled(age, xp.is_some())
-                    && let Some((text, _)) = pending_catch.take()
+                    && let Some((text, _, popup)) = pending_catch.take()
                 {
-                    self.finish_catch(&text, xp);
+                    let icon = reader.as_mut().and_then(|r| r.catch_icon(popup));
+                    self.finish_catch(&text, xp, icon);
                 }
             }
             let dt = now - prev_tick;
@@ -1133,9 +1139,10 @@ impl Engine<'_> {
         }
         self.hold(false);
         // A second close doesn't wait for the XP: log the catch without it rather than lose the row.
-        if let Some((text, _)) = pending_catch.take() {
+        if let Some((text, _, popup)) = pending_catch.take() {
             let xp = reader.as_mut().and_then(|r| r.catch_xp());
-            self.finish_catch(&text, xp);
+            let icon = reader.as_mut().and_then(|r| r.catch_icon(popup));
+            self.finish_catch(&text, xp, icon);
         }
         // shortcut: lines a file still refuses at exit (open in Excel all along) are lost; a pending file would keep them.
         for (csv, u) in &self.unwritten {

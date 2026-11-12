@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::SeqCst;
@@ -22,7 +22,7 @@ use super::view::{
     catch_spans, coin_spans, earned_spans, gps_text, hms, lifetime_spans, overlay_text, per_hour, save_warning, spans,
     styled, xp_spans,
 };
-use crate::game::catch::{LABEL_STROKE, rod_pieces, rod_stats};
+use crate::game::catch::{Catch, LABEL_STROKE, rod_pieces, rod_stats};
 use crate::r#macro::bot::{Bot, release_inputs};
 use handy_sdk::roblox::http::win_http_get_bytes;
 
@@ -252,14 +252,22 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
         }
         ui.set_spans(ID_LAST, &catch_spans(&v.last_fish, &v.last_catch));
         ui.set_spans(ID_RAREST, &catch_spans(&v.rarest_fish, &v.rarest));
-        ui.set_picture(
-            ID_LAST,
-            &pictures.get(v.last_fish.as_ref().map_or("", |f| f.species.as_str())),
-        );
-        ui.set_picture(
-            ID_RAREST,
-            &pictures.get(v.rarest_fish.as_ref().map_or("", |f| f.species.as_str())),
-        );
+        // the game's own icon when the catch popup had one and it has downloaded, else the wiki's picture
+        let picture = |f: &Option<Catch>| {
+            let Some(f) = f else { return PathBuf::new() };
+            let game = if f.icon.is_empty() {
+                PathBuf::new()
+            } else {
+                pictures.get(&f.icon)
+            };
+            if game.as_os_str().is_empty() {
+                pictures.get(&f.species)
+            } else {
+                game
+            }
+        };
+        ui.set_picture(ID_LAST, &picture(&v.last_fish));
+        ui.set_picture(ID_RAREST, &picture(&v.rarest_fish));
         ui.set_spans(ID_COINS, &coin_spans(&v.coins));
         ui.set_spans(
             ID_LEVEL,
