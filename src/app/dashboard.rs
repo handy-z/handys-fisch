@@ -19,8 +19,8 @@ use windows::Win32::UI::WindowsAndMessaging::SHOW_WINDOW_CMD;
 use super::config::SettingsStore;
 use super::fish_pictures::FishPictures;
 use super::view::{
-    catch_spans, coin_spans, earned_spans, gps_text, hms, lifetime_spans, overlay_text, per_hour, save_warning, spans,
-    styled, xp_spans,
+    bestiary_color, catch_spans, coin_spans, earned_spans, gps_text, hms, lifetime_spans, overlay_text, per_hour,
+    save_warning, spans, styled, xp_spans,
 };
 use crate::game::catch::{Catch, LABEL_STROKE, mutation_tint, rod_pieces, rod_stats};
 use crate::r#macro::bot::{Bot, release_inputs};
@@ -202,12 +202,17 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
                 place
             },
         );
-        let bestiary = if pl.bestiary.is_empty() {
-            "–".to_owned()
-        } else {
-            format!("{} overall", pl.bestiary)
+        // the percent in the player list's color for it, then a grey "overall"
+        let bestiary = match bestiary_color(&pl.bestiary) {
+            Some(color) => {
+                let mut s = styled(&pl.bestiary, &color, true, LABEL_STROKE);
+                s.extend(styled(" overall", "b3b3b3", false, LABEL_STROKE));
+                s
+            }
+            None if pl.bestiary.is_empty() => styled("–", "", false, ""),
+            None => styled(&pl.bestiary, "b3b3b3", false, LABEL_STROKE),
         };
-        ui.set_spans(ID_BESTIARY, &styled(&bestiary, "b3b3b3", false, LABEL_STROKE)); // the game's 787878 is unreadable on the dark card
+        ui.set_spans(ID_BESTIARY, &bestiary);
         ui.set_spans(
             ID_LIFETIME,
             &lifetime_spans(

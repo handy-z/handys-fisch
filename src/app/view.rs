@@ -49,6 +49,27 @@ pub fn catch_spans(fish: &Option<Catch>, popup: &str) -> Vec<Span> {
 const COINS: &str = "fffde4"; // hud/safezone/coins at rest
 const XP: &str = "fff4d9"; // xpup/xp
 
+/// The player list's color for a Bestiary percent ("58%"), as hex: pale cream to orange, linear between these
+/// points, read live from the game's list (36%, 87% and 99% fell exactly on the lines). None for anything else.
+pub fn bestiary_color(text: &str) -> Option<String> {
+    const RAMP: [(f32, [f32; 3]); 7] = [
+        (21.0, [255.0, 250.38, 227.70]),
+        (38.0, [255.0, 246.64, 205.60]),
+        (58.0, [255.0, 232.80, 172.72]),
+        (74.0, [255.0, 210.40, 138.16]),
+        (88.0, [255.0, 190.80, 107.92]),
+        (94.0, [255.0, 182.40, 94.96]),
+        (100.0, [255.0, 174.0, 82.0]),
+    ];
+    let pct: f32 = text.trim().strip_suffix('%')?.parse().ok()?;
+    let pct = pct.clamp(RAMP[0].0, 100.0); // below 21% not seen: kept at the palest
+    let i = RAMP.iter().rposition(|(p, _)| *p <= pct)?.min(RAMP.len() - 2);
+    let ((p0, c0), (p1, c1)) = (RAMP[i], RAMP[i + 1]);
+    let t = (pct - p0) / (p1 - p0);
+    let ch = |k: usize| (c0[k] + (c1[k] - c0[k]) * t).round() as u8;
+    Some(format!("{:02x}{:02x}{:02x}", ch(0), ch(1), ch(2)))
+}
+
 /// The GPS readout: "XYZ: 2499.3, -1108.2, 823.5 | 12.4 s/s"; the speed part only when known.
 pub fn gps_text(pos: &[f32; 3], speed: Option<f32>) -> String {
     let mut text = format!("XYZ: {:.1}, {:.1}, {:.1}", pos[0], pos[1], pos[2]);
@@ -163,6 +184,18 @@ pub fn save_warning(unsaved_rows: i32, settings_unsaved: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn view_bestiary_color_like_the_player_list() {
+        // as read live from the game's list
+        assert_eq!(bestiary_color("21%").as_deref(), Some("fffae4"));
+        assert_eq!(bestiary_color("36%").as_deref(), Some("fff7d0"));
+        assert_eq!(bestiary_color("87%").as_deref(), Some("ffc06e"));
+        assert_eq!(bestiary_color("99%").as_deref(), Some("ffaf54"));
+        assert_eq!(bestiary_color("100%").as_deref(), Some("ffae52"));
+        assert_eq!(bestiary_color("5%").as_deref(), Some("fffae4"));
+        assert!(bestiary_color("").is_none() && bestiary_color("–").is_none());
+    }
     use crate::game::catch::{odds_color, parse_catch};
 
     #[test]
