@@ -310,6 +310,8 @@ pub struct Actions {
     pub slash_due: bool,
     /// run the fishing step this tick
     pub fish: bool,
+    /// a reel kept going after a turn-off ended this tick: count it like any reel
+    pub reel_over: bool,
 }
 
 /// The bot loop's rules for chat, closing and turning off with the line out, apart from the keys they send so they can
@@ -321,6 +323,8 @@ pub struct SafetyGuard {
     rod_char: usize, // character the rod was last seen on while on (0: not since it turned on)
     rod_gone_at: Option<Instant>, // when the rod left that character
     slash_at: Option<Instant>, // when to send the held-back '/'
+    finish_reel: bool, // turned off mid-reel: it plays out, then the rod is unequipped
+    unequip_after_reel: bool, // that reel ended: unequip once Roblox is focused
 }
 
 impl SafetyGuard {
@@ -335,6 +339,20 @@ impl SafetyGuard {
         };
         if !t.on && self.was_on && out {
             self.unequip_pending = true; // turned off with the line out
+        }
+        // Turned off mid-reel: the fish is already hooked, so the reel plays out (only the reel: no new cast), then the
+        // rod is unequipped. Back on meanwhile: fishing as usual.
+        let reeling = s.is_some_and(|s| reel_state(s.rod_state));
+        if !t.on && self.was_on && reeling {
+            self.finish_reel = true;
+        }
+        if t.on {
+            self.finish_reel = false;
+            self.unequip_after_reel = false;
+        } else if self.finish_reel && !reeling {
+            self.finish_reel = false;
+            self.unequip_after_reel = true;
+            a.reel_over = true;
         }
         self.was_on = t.on;
         if t.quit_requested && a.on && !s.is_some_and(|s| reel_state(s.rod_state)) {
@@ -388,7 +406,7 @@ impl SafetyGuard {
             a.stop_reason = "chat opened".into();
         }
         // rod_gone_at: don't re-equip
-        a.fish = a.on
+        a.fish = (a.on || self.finish_reel)
             && t.focused
             && s.is_some()
             && !typing
@@ -398,6 +416,10 @@ impl SafetyGuard {
         if !a.fish {
             if a.on || !out {
                 self.unequip_pending = false; // back on, or the line is no longer out
+            }
+            if self.unequip_after_reel && t.focused && !typing {
+                a.unequip = true;
+                self.unequip_after_reel = false;
             }
             if self.unequip_pending && t.focused && !typing {
                 // waits for Roblox focus: the dashboard checkbox takes it away
@@ -1111,6 +1133,9 @@ impl Engine<'_> {
                     self.stop_reason = why;
                 }
             } else {
+                if a.reel_over && self.reeling {
+                    self.end_reel(); // played out after a turn-off: caught or lost, it counts
+                }
                 self.hold(false);
                 self.reeling = false;
                 self.reel_log = ReelLog::default();
@@ -1345,6 +1370,28 @@ mod tests {
         let mut g2 = SafetyGuard::default();
         g2.tick(&tk(t0, true, true, false, false, &idle));
         assert!(!g2.tick(&tk(t0 + MS(5), false, true, false, false, &idle)).unequip && !g2.unequip_pending());
+    }
+
+    #[test]
+    fn bot_guard_turned_off_mid_reel_finishes_it_then_unequips() {
+        let t0 = Instant::now();
+        let mut g = SafetyGuard::default();
+        let (reeling, idle) = (rod_out(Some(ROD_REELING), false), rod_out(Some(ROD_IDLE), false));
+        assert!(g.tick(&tk(t0, true, true, false, false, &reeling)).fish);
+        let a = g.tick(&tk(t0 + MS(5), false, true, false, false, &reeling)); // F1 mid-reel
+        assert!(!a.on && a.fish && !a.unequip); // stays off, but the reel plays out
+        let a = g.tick(&tk(t0 + MS(10), false, false, false, false, &idle)); // over while Roblox isn't focused
+        assert!(!a.fish && a.reel_over && !a.unequip);
+        let a = g.tick(&tk(t0 + MS(15), false, true, false, false, &idle));
+        assert!(a.unequip && !a.reel_over && !a.fish);
+        assert!(!g.tick(&tk(t0 + MS(20), false, true, false, false, &idle)).unequip); // once
+        // back on mid-reel: fishing as usual, nothing unequipped after
+        let mut g = SafetyGuard::default();
+        g.tick(&tk(t0, true, true, false, false, &reeling));
+        g.tick(&tk(t0 + MS(5), false, true, false, false, &reeling));
+        assert!(g.tick(&tk(t0 + MS(10), true, true, false, false, &reeling)).fish);
+        let a = g.tick(&tk(t0 + MS(15), true, true, false, false, &idle));
+        assert!(a.on && !a.unequip && !a.reel_over);
     }
 
     #[test]
