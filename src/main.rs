@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use handy_sdk::app::args::arg_value;
 use handy_sdk::app::crash_guard::on_crash;
-use handy_sdk::app::self_update::update_on_startup;
+use handy_sdk::app::self_update::{UpdateStatus, update_on_startup};
 use handy_sdk::app::session_reader::SessionReader;
 use handy_sdk::app::single_instance::SingleInstance;
 use handy_sdk::app::status_snapshot::{snapshot_allowed, status_line, wait_for};
@@ -55,7 +55,11 @@ fn status_snapshot(out: &Path) -> i32 {
         Duration::from_secs(15),
         Duration::from_millis(50),
     );
-    let mut f = format!("status: {}\n", status_line(&updater));
+    let mut f = format!(
+        "version: {}\nstatus: {}\n",
+        env!("CARGO_PKG_VERSION"),
+        status_line(&updater)
+    );
     if let Some(s) = &s {
         let rod = if s.rod.is_empty() { "none in hand" } else { &s.rod };
         f += &format!("rod: {rod}\nphase: {}\n", describe_phase(s));
@@ -87,10 +91,9 @@ fn main() {
     on_crash(release_inputs); // a crash mid-reel must not leave Space held down in Roblox
     // Only builds made by release.cmd update themselves (dev builds and build.cmd never do). Skipped while another
     // copy runs: its exe is in use and it would be replaced under it.
-    if option_env!("HANDY_RELEASE").is_some()
-        && !SingleInstance::is_running(MUTEX)
-        && update_on_startup("handy-z", "handys-fisch", env!("CARGO_PKG_VERSION"))
-    {
+    let update = (option_env!("HANDY_RELEASE").is_some() && !SingleInstance::is_running(MUTEX))
+        .then(|| update_on_startup("handy-z", "handys-fisch", env!("CARGO_PKG_VERSION")));
+    if update == Some(UpdateStatus::Restarting) {
         return; // the new version is starting; exit before anything else runs
     }
     let mut instance = SingleInstance::new(MUTEX, DASHBOARD_CLASS);
@@ -137,6 +140,7 @@ fn main() {
         settings: &store,
         bus: &bus,
         hooks_ok,
+        update,
     };
     let rc = run_dashboard(&deps, SW_SHOWDEFAULT);
 

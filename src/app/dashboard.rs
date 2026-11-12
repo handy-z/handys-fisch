@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::SeqCst;
 use std::time::{Duration, Instant};
 
+use handy_sdk::app::self_update::{UpdateStatus, badge_text};
 use handy_sdk::app::updater_thread::{AppStatus, Updater, status_name, status_tone};
 use handy_sdk::input::focus::{ForegroundWatcher, activate_process_window};
 use handy_sdk::input::key::vk_name;
@@ -38,6 +39,8 @@ pub struct DashboardDeps<'a> {
     pub bus: &'a EventBus,
     /// LowLevelHooks::start() installed every hook
     pub hooks_ok: bool,
+    /// what the startup self-update did; None when it did not run
+    pub update: Option<UpdateStatus>,
 }
 
 const ID_ROD: i32 = 2;
@@ -79,7 +82,7 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
 
     let d = Dashboard::new(Spec {
         title: "handy's fisch".into(),
-        badge: concat!("v", env!("CARGO_PKG_VERSION")).into(),
+        badge: badge_text(env!("CARGO_PKG_VERSION"), deps.update),
         window_class: DASHBOARD_CLASS.into(),
         rows: vec![
             page("Fishing"),
