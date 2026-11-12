@@ -42,3 +42,7 @@ Each module is `src/<folder>/<file>.rs`, with its tests in a `#[cfg(test)] mod t
 - **Time:** `std::time::{Duration, Instant}`.
 - **Tests:** `crate::testing::FakeMemory` is the byte-map `Memory`; inject `HttpGet` so tests never hit the network; each test uses its own temp dir (tests run in parallel).
 - No new dependencies without a reason, no abstractions without two callers, no dead code.
+
+## Releases and updates
+
+`release.cmd <version>` (MAJOR.MINOR.PATCH) publishes a release: it refuses unless this tree is clean (and `..\sdk`, when present, is clean and equal to `origin/main`) and the tag is free, sets the version in `Cargo.toml`, builds with `HANDY_RELEASE=1` and tests, copies `handys-fisch.exe` plus its `.sha256` into `release\`, commits `Release v<version>`, tags and pushes, then runs `gh release create`. Only builds made by it self-update at startup (`update_on_startup` in `main.rs`, skipped by `--status` and while another copy runs); dev builds and `build.cmd` never do. Push the SDK first: the release is built against the local SDK. It publishes a public release: ask the user before running it. It never closes or starts the app.
