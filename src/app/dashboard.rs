@@ -98,7 +98,7 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             rich_value(ID_RAREST, "Rarest").lines(2).picture(80),
             page("Player"),
             section("Gear"),
-            rich_value(ID_ROD, "Rod").lines(8),
+            rich_value(ID_ROD, "Rod").lines(11), // name + up to 10 stat lines (Rod Of The Depths has 9)
             rich_value(ID_BAIT, "Bait"),
             section("Progress"),
             rich_value(ID_COINS, "Coins"),
@@ -207,7 +207,7 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
         } else {
             format!("{} overall", pl.bestiary)
         };
-        ui.set_spans(ID_BESTIARY, &styled(&bestiary, "787878", false, LABEL_STROKE)); // its "% Completed" label
+        ui.set_spans(ID_BESTIARY, &styled(&bestiary, "b3b3b3", false, LABEL_STROKE)); // the game's 787878 is unreadable on the dark card
         ui.set_spans(
             ID_LIFETIME,
             &lifetime_spans(
