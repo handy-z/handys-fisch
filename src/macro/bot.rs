@@ -324,7 +324,8 @@ pub struct SafetyGuard {
     rod_gone_at: Option<Instant>, // when the rod left that character
     slash_at: Option<Instant>, // when to send the held-back '/'
     finish_reel: bool, // turned off mid-reel: it plays out, then the rod is unequipped
-    unequip_after_reel: bool, // that reel ended: unequip once Roblox is focused
+    unequip_at: Option<Instant>, // that reel ended: when to (re)try the unequip
+    unequip_tries: u8,
 }
 
 impl SafetyGuard {
@@ -348,10 +349,13 @@ impl SafetyGuard {
         }
         if t.on {
             self.finish_reel = false;
-            self.unequip_after_reel = false;
+            self.unequip_at = None;
         } else if self.finish_reel && !reeling {
             self.finish_reel = false;
-            self.unequip_after_reel = true;
+            // The game ignores the rod's key for a moment after a catch (a cast held through it goes ~0.2 s after the
+            // rod turns idle, seen live), so the first press waits past that.
+            self.unequip_at = Some(t.now + MS(500));
+            self.unequip_tries = 0;
             a.reel_over = true;
         }
         self.was_on = t.on;
@@ -417,9 +421,16 @@ impl SafetyGuard {
             if a.on || !out {
                 self.unequip_pending = false; // back on, or the line is no longer out
             }
-            if self.unequip_after_reel && t.focused && !typing {
-                a.unequip = true;
-                self.unequip_after_reel = false;
+            if let Some(at) = self.unequip_at {
+                if s.is_some_and(|s| s.rod.is_empty()) {
+                    self.unequip_at = None; // gone: done
+                } else if t.now >= at && t.focused && !typing && !out && !reeling {
+                    // Still in hand: press again, but only after the last press had time to show (a rod takes ~1 s
+                    // to appear or go), or a second press would equip it again.
+                    a.unequip = true;
+                    self.unequip_tries += 1;
+                    self.unequip_at = (self.unequip_tries < 3).then(|| t.now + MS(1500));
+                }
             }
             if self.unequip_pending && t.focused && !typing {
                 // waits for Roblox focus: the dashboard checkbox takes it away
@@ -1380,11 +1391,29 @@ mod tests {
         assert!(g.tick(&tk(t0, true, true, false, false, &reeling)).fish);
         let a = g.tick(&tk(t0 + MS(5), false, true, false, false, &reeling)); // F1 mid-reel
         assert!(!a.on && a.fish && !a.unequip); // stays off, but the reel plays out
-        let a = g.tick(&tk(t0 + MS(10), false, false, false, false, &idle)); // over while Roblox isn't focused
-        assert!(!a.fish && a.reel_over && !a.unequip);
-        let a = g.tick(&tk(t0 + MS(15), false, true, false, false, &idle));
+        let a = g.tick(&tk(t0 + MS(10), false, true, false, false, &idle)); // over
+        assert!(!a.fish && a.reel_over && !a.unequip); // not yet: the game ignores the key right after a catch
+        assert!(!g.tick(&tk(t0 + MS(400), false, true, false, false, &idle)).unequip);
+        assert!(!g.tick(&tk(t0 + MS(600), false, false, false, false, &idle)).unequip); // waits for Roblox focus
+        let a = g.tick(&tk(t0 + MS(610), false, true, false, false, &idle));
         assert!(a.unequip && !a.reel_over && !a.fish);
-        assert!(!g.tick(&tk(t0 + MS(20), false, true, false, false, &idle)).unequip); // once
+        assert!(!g.tick(&tk(t0 + MS(1000), false, true, false, false, &idle)).unequip); // too soon to retry
+        assert!(g.tick(&tk(t0 + MS(2200), false, true, false, false, &idle)).unequip); // ignored: pressed again
+        let mut gone = idle.clone();
+        gone.rod = String::new();
+        assert!(!g.tick(&tk(t0 + MS(2300), false, true, false, false, &gone)).unequip);
+        assert!(!g.tick(&tk(t0 + MS(9000), false, true, false, false, &idle)).unequip); // done once it went
+        // never more than 3 presses
+        let mut g = SafetyGuard::default();
+        g.tick(&tk(t0, true, true, false, false, &reeling));
+        g.tick(&tk(t0 + MS(5), false, true, false, false, &reeling));
+        let presses = (1..60)
+            .filter(|i| {
+                g.tick(&tk(t0 + MS(10 + i * 200), false, true, false, false, &idle))
+                    .unequip
+            })
+            .count();
+        assert_eq!(presses, 3);
         // back on mid-reel: fishing as usual, nothing unequipped after
         let mut g = SafetyGuard::default();
         g.tick(&tk(t0, true, true, false, false, &reeling));
