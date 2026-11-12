@@ -34,9 +34,16 @@ fn percent(f: f32) -> String {
 /// Reel: hold Space (the bar goes right) while the fish is right of the bar, both looked ahead by their speed (X
 /// scale per s) to cover Roblox's ~80 ms input lag and the bar's momentum.
 pub fn reel_hold(bar: f32, bar_v: f32, fish: f32, fish_v: f32) -> bool {
-    // Leads tuned in a closed-loop sim on the old fitted bar physics: fish inside the bar 97% of the time at 80 ms lag
-    // (85% at 120 ms) against 35% for plain fish > bar, which overshoots on every swing.
-    fish + 0.2 * fish_v > bar + 0.35 * bar_v
+    // Leads tuned in a closed-loop sim on bar physics fitted to 28 recorded reels (±1.1/s², ~50 ms lag): the bar lead
+    // 0.30 (was 0.35) settles centred after a 0.4-0.55 fish jump in 1.23 s on average (was 1.47 s) with no real
+    // overshoot, and keeps the fish slightly closer to centre on the recorded fish. Below ~0.28 it overshoots.
+    fish + 0.2 * fish_v > bar + 0.3 * bar_v
+}
+
+/// Dreambreaker swaps the reel's controls from 40% progress on: holding Space moves the bar left. Rule taken from the
+/// public Hikari macro (rod name contains "dreambreaker", progress >= 40%); not yet seen in our own recordings.
+pub fn controls_inverted(rod: &str, progress: f32) -> bool {
+    progress >= 0.4 && rod.to_lowercase().contains("dreambreaker")
 }
 
 /// The bot's own reel phase, with how fast the progress bar fills and the game's progress speed for this reel:
@@ -844,7 +851,7 @@ impl Engine<'_> {
             // Focus read live, as for every key here: the roblox_foreground flag can lag an alt-tab.
             let down = s.rod_state == Some(ROD_REELING)
                 && r.progress < 0.98
-                && reel_hold(r.bar, self.bar_v, r.fish, self.fish_v)
+                && reel_hold(r.bar, self.bar_v, r.fish, self.fish_v) != controls_inverted(&s.rod, r.progress)
                 && foreground_is(pid);
             self.hold(down);
             self.set_view(&s.rod, &reeling_text(r.progress, self.progress_v, &r.progress_speed));
@@ -1192,6 +1199,14 @@ mod tests {
         assert!(!reel_hold(0.5, 0.6, 0.6, 0.0)); // racing right toward the fish: let go early to stop on it
         assert!(reel_hold(0.5, -0.6, 0.4, 0.0)); // sliding left toward the fish: hold to brake
         assert!(reel_hold(0.5, 0.0, 0.48, 0.5)); // fish just left but heading right fast: go meet it
+    }
+
+    #[test]
+    fn bot_dreambreaker_swaps_controls_from_40_percent() {
+        assert!(!controls_inverted("Dreambreaker", 0.39));
+        assert!(controls_inverted("Dreambreaker", 0.4));
+        assert!(controls_inverted("Abyssal dreambreaker", 0.9)); // mutation prefix, any case
+        assert!(!controls_inverted("Rod Of The Depths", 0.9));
     }
 
     #[test]
