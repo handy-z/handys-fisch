@@ -12,12 +12,15 @@ use handy_sdk::input::hooks::KeyPoller;
 use handy_sdk::input::key::{BACKSLASH, ENTER, Key, MOUSE_LEFT, SLASH, SPACE, digit_key, key_down};
 use handy_sdk::input::send::{press, release, tap};
 use handy_sdk::roblox::events::RobloxWatcher;
+use handy_sdk::ui::raster::Tri;
 use handy_sdk::util::timing::{Sustained, precise_wait};
 use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST};
 
 use crate::app::config::{Settings, SettingsStore, load_settings};
 use crate::game::catch::{Catch, Piece, is_item_popup, kg_text, level_pieces, parse_catch};
-use crate::game::reader::{FishState, GameReader, PlayerInfo, ROD_IDLE, ROD_LURE, ROD_REELING, line_out, reel_state};
+use crate::game::reader::{
+    CatchLook, FishState, GameReader, PlayerInfo, ROD_IDLE, ROD_LURE, ROD_REELING, line_out, reel_state,
+};
 
 const MS: fn(u64) -> Duration = Duration::from_millis;
 
@@ -472,6 +475,8 @@ pub struct View {
     pub level: Vec<Piece>,
     /// the same popups parsed; None when they don't
     pub last_fish: Option<Catch>,
+    /// last_fish's 3D model from its popup, when it could be read; not persisted
+    pub last_model: Option<Arc<Vec<Tri>>>,
     pub rarest_fish: Option<Catch>,
     pub player: PlayerInfo,
     /// studs/s between the last two position reads (the GPS's "s/s")
@@ -780,6 +785,7 @@ impl Engine<'_> {
             let mut v = bot.view.lock().unwrap();
             v.last_catch = text.into();
             v.last_fish = c.clone();
+            v.last_model = None;
             if let Some(f) = c.as_ref().filter(|f| f.odds > self.rarest_odds) {
                 self.rarest_odds = f.odds;
                 v.rarest = text.into();
@@ -796,15 +802,21 @@ impl Engine<'_> {
     }
 
     /// ~400 ms later, with the XP popup: XP, log
-    fn finish_catch(&mut self, text: &str, xp: Option<i64>, look: Option<(Option<String>, Option<u32>)>) {
+    fn finish_catch(&mut self, text: &str, xp: Option<i64>, look: Option<CatchLook>) {
         let mut c = parse_catch(text);
-        if let Some(c) = &mut c {
-            c.xp = xp;
-            if let Some((icon, tint)) = look {
-                c.icon = icon.unwrap_or_default();
-                c.tint = tint;
+        let mut model = None;
+        if let Some(look) = look {
+            if !look.model.is_empty() {
+                model = Some(Arc::new(look.model));
+            }
+            if let Some(c) = &mut c {
+                c.icon = look.icon.unwrap_or_default();
+                c.tint = look.tint;
                 c.looked = true;
             }
+        }
+        if let Some(c) = &mut c {
+            c.xp = xp;
         }
         self.bot.xp_gained.fetch_add(xp.unwrap_or(0), SeqCst);
         if self.bot.on.load(SeqCst) {
@@ -814,6 +826,9 @@ impl Engine<'_> {
             let mut v = self.bot.view.lock().unwrap();
             if v.last_catch == text {
                 v.last_fish.clone_from(&c); // now with its XP and icon; a newer catch already replaced it otherwise
+                if model.is_some() {
+                    v.last_model = model;
+                }
             }
             if v.rarest == text {
                 v.rarest_fish.clone_from(&c);
