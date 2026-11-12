@@ -37,7 +37,9 @@ pub fn reel_hold(bar: f32, bar_v: f32, fish: f32, fish_v: f32) -> bool {
     // Leads tuned in a closed-loop sim on bar physics fitted to 28 recorded reels (±1.1/s², ~50 ms lag): the bar lead
     // 0.30 (was 0.35) settles centred after a 0.4-0.55 fish jump in 1.23 s on average (was 1.47 s) with no real
     // overshoot, and keeps the fish slightly closer to centre on the recorded fish. Below ~0.28 it overshoots.
-    fish + 0.2 * fish_v > bar + 0.3 * bar_v
+    // Fish lead 0.35 (was 0.2): ~3% faster fill on Tryhard Rod fish (bar 0.13, fish jumps ~1.5/s) at 50 and 100 ms
+    // lag, no worse on normal rods; past 0.5 it chases noise.
+    fish + 0.35 * fish_v > bar + 0.3 * bar_v
 }
 
 /// Dreambreaker swaps the reel's controls from 40% progress on: holding Space moves the bar left. Rule taken from the
