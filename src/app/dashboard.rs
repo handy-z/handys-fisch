@@ -41,7 +41,6 @@ pub struct DashboardDeps<'a> {
 }
 
 const ID_ROD: i32 = 2;
-const ID_PHASE: i32 = 3;
 const ID_CATCH: i32 = 4;
 const ID_ON: i32 = 5;
 const ID_LAST: i32 = 6;
@@ -83,11 +82,10 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
         window_class: DASHBOARD_CLASS.into(),
         rows: vec![
             page("Fishing"),
-            section("Auto fish"),
+            section("Controls"),
             check(ID_ON, "Auto fish"),
             check(ID_PERFECT, "Perfect cast\thold until the bar is full"),
             value(ID_LAST_CAST, "Last cast"),
-            value(ID_PHASE, "Phase"),
             section("This session"),
             value(ID_TIME, "Time fishing"),
             value(ID_CATCH, "Catches").lines(2),
@@ -96,9 +94,9 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             rich_value(ID_XP, "XP gained"),
             section("Fish"), // kept across restarts
             // name, then kg · odds · value, in the game's colors and font; the fish's picture
-            // the model fits the slot's smaller side, so height (lines) is what makes it bigger; ~100 wide is enough
-            rich_value(ID_LAST, "Last catch").lines(4).picture(100),
-            rich_value(ID_RAREST, "Rarest").lines(4).picture(100),
+            // the model fits the slot's smaller side: 3 lines fit the 2 text lines, the extra width helps long fish
+            rich_value(ID_LAST, "Last catch").lines(3).picture(130),
+            rich_value(ID_RAREST, "Rarest").lines(3).picture(130),
             page("Player"),
             section("Gear"),
             rich_value(ID_ROD, "Rod").lines(11), // name + up to 10 stat lines (Rod Of The Depths has 9)
@@ -147,18 +145,23 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             let detail = format!("{} · press {} in Roblox", v.stopped, vk_name(st.toggle_vk));
             ui.set_status(Tone::Bad, "Auto fish stopped", &detail);
         } else {
-            let mut detail = String::new();
-            if !deps.hooks_ok {
-                detail = "hotkeys unavailable".to_owned(); // the '/' chat hold-back is off
-            }
-            if !v.warning.is_empty() {
-                detail = if detail.is_empty() {
-                    v.warning.clone()
-                } else {
-                    format!("{detail} · {}", v.warning)
-                };
-            }
-            ui.set_status(status_tone(status), status_name(status), &detail);
+            // Ready: the header is the bot's state (the phase), so no Phase row repeats it
+            let ready = status == AppStatus::Ready;
+            let title = match (ready, on) {
+                (false, _) => status_name(status),
+                (true, true) => "Fishing",
+                (true, false) => "Off",
+            };
+            let phase = v.phase.strip_prefix("Off · ").unwrap_or(&v.phase);
+            let hooks = if deps.hooks_ok { "" } else { "hotkeys unavailable" }; // the '/' chat hold-back is off
+            let parts = [if ready { phase } else { "" }, hooks, v.warning.as_str()];
+            let detail = parts
+                .iter()
+                .filter(|p| !p.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join(" · ");
+            ui.set_status(status_tone(status), title, &detail);
         }
         ui.set_text(ID_ON, &format!("Auto fish\tpress [{}]", vk_name(st.toggle_vk)));
         let pl = &v.player;
@@ -191,12 +194,8 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
         };
         let mut place = vec![Span::plain(&format!("{zone}{world}"))];
         if let Some(pos) = &pl.pos {
-            // bold white, as the GPS shows it
-            place.push(Span {
-                text: format!("\n{}", gps_text(pos, v.speed)),
-                bold: true,
-                ..Default::default()
-            });
+            // muted: the zone is the headline, the GPS readout a detail under it
+            place.extend(styled(&format!("\n{}", gps_text(pos, v.speed)), "9a9a9a", false, ""));
         }
         ui.set_spans(
             ID_LOCATION,
@@ -226,7 +225,6 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
                 (pl.seconds_played / 3600.0) as i64,
             ),
         );
-        ui.set_text(ID_PHASE, &v.phase);
         let casts = bot.casts.load(SeqCst);
         let rated = if casts != 0 {
             format!(" · {}/{casts} perfect", bot.perfect_casts.load(SeqCst))

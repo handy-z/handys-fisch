@@ -497,7 +497,15 @@ pub fn rod_pieces(label: &str, equipped: bool, stats: &[String]) -> Vec<Piece> {
     for s in stats {
         out.push(piece("\n", "", false, false, "")); // one to a line, as the game lists them
         let bonus = if s.ends_with(')') { s.rfind(" (") } else { None };
-        out.push(piece(&s[..bonus.map_or(s.len(), |b| b + 1)], "afafaf", true, false, ""));
+        let main = &s[..bonus.map_or(s.len(), |b| b + 1)];
+        // muted name, bright value, so the list reads as two columns
+        match main.split_once(": ") {
+            Some((name, value)) => {
+                out.push(piece(format!("{name}: "), "9a9a9a", false, false, ""));
+                out.push(piece(value, "", true, false, ""));
+            }
+            None => out.push(piece(main, "afafaf", true, false, "")),
+        }
         if let Some(b) = bonus {
             out.push(piece(&s[b + 1..], "ffd43a", true, false, ""));
         }
@@ -807,8 +815,9 @@ mod tests {
         assert_eq!(p[0], piece("★ Momentum ★ ", "d3b380", true, false, LABEL_STROKE)); // no outline on the wiki
         assert_eq!(p[1], piece("Carrot Rod", "", true, false, LABEL_STROKE));
         assert!(
-            p[3] == piece("Lure Speed: 85% ", "afafaf", true, false, "")
-                && p[4] == piece("(+28%)", "ffd43a", true, false, "")
+            p[3] == piece("Lure Speed: ", "9a9a9a", false, false, "")
+                && p[4] == piece("85% ", "", true, false, "")
+                && p[5] == piece("(+28%)", "ffd43a", true, false, "")
         );
         assert_eq!(
             plain(&rod_pieces("Carrot Rod", false, &[])),
