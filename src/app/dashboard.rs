@@ -135,6 +135,7 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
         ui.set_check(ID_PERFECT, st.perfect_cast);
         let status = deps.updater.status();
         let v = bot.view();
+        ui.set_status_tip(&deps.updater.detail());
         let unsaved = save_warning(bot.unsaved_rows.load(SeqCst), bot.settings_unsaved.load(SeqCst));
         if quit_by.get().is_some() {
             // the closing status stays
@@ -146,9 +147,9 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             let detail = format!("{} · press {} in Roblox", v.stopped, vk_name(st.toggle_vk));
             ui.set_status(Tone::Bad, "Auto fish stopped", &detail);
         } else {
-            let mut detail = deps.updater.detail();
+            let mut detail = String::new();
             if !deps.hooks_ok {
-                detail = format!("{detail} · hotkeys unavailable"); // the '/' chat hold-back is off
+                detail = "hotkeys unavailable".to_owned(); // the '/' chat hold-back is off
             }
             if !v.warning.is_empty() {
                 detail = if detail.is_empty() {
@@ -159,7 +160,7 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             }
             ui.set_status(status_tone(status), status_name(status), &detail);
         }
-        ui.set_text(ID_ON, &format!("Auto fish\tpress {} in Roblox", vk_name(st.toggle_vk)));
+        ui.set_text(ID_ON, &format!("Auto fish\tpress [{}]", vk_name(st.toggle_vk)));
         let pl = &v.player;
         let rod = if pl.rod_label.is_empty() { &v.rod } else { &pl.rod_label }; // "[Momentum] Carrot Rod"
         if rod.is_empty() {
