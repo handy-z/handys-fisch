@@ -358,6 +358,7 @@ pub struct GameReader {
     coins: CachedPath,
     xpup: CachedPath,
     // always shown / hidden unless opened: tell a wrong dumped Visible offset
+    safezone: CachedPath,
     inventory: CachedPath,
     fade: CachedPath,
     vis: VisibleProbe,
@@ -400,6 +401,7 @@ impl GameReader {
             gui_kids: Vec::new(),
             coins: CachedPath::new(&["hud", "safezone", "coins"]),
             xpup: CachedPath::new(&["hud", "safezone", "xpup"]),
+            safezone: CachedPath::new(&["hud", "safezone"]),
             inventory: CachedPath::new(&["backpack", "inventory"]),
             fade: CachedPath::new(&["death", "fade"]),
             vis: VisibleProbe::default(),
@@ -845,7 +847,9 @@ impl GameReader {
         self.lp = lp;
         self.gui = player_gui(p, o, self.lp);
         if self.gui != 0 {
-            let shown = [self.hotbar.get(p, o, self.gui)];
+            // hotbar alone left 5 offsets fitting (live, version-4ea8e85481e34f46: the real 0x345 and 0x1ed, 0x1f5,
+            // 0x22d, 0x235), so the scan kept the wrong dumped 0x72d; safezone is 0 at those four
+            let shown = [self.hotbar.get(p, o, self.gui), self.safezone.get(p, o, self.gui)];
             let hidden = [self.inventory.get(p, o, self.gui), self.fade.get(p, o, self.gui)];
             self.vis.calibrate(p, o, &shown, &hidden, &[]);
         }
@@ -1180,5 +1184,8 @@ mod tests {
         cost("playerInfo", 100, &mut |r| {
             let _ = r.player_info();
         });
+        if let Some(pi) = r.player_info() {
+            println!("  rod='{}' rod_stats={:?}", pi.rod, pi.rod_stats);
+        }
     }
 }

@@ -170,11 +170,11 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             ui.set_text(ID_ROD, "none equipped");
         } else {
             // the game's own stat lines; the wiki's base stats until the equipment panel has the rod
-            let wiki = rod_stats(if pl.rod.is_empty() { &v.rod } else { &pl.rod });
-            let mut stats = pl.rod_stats.clone();
-            if stats.is_empty() && !wiki.is_empty() {
-                stats = vec![wiki];
-            }
+            let stats = if pl.rod_stats.is_empty() {
+                rod_stats(if pl.rod.is_empty() { &v.rod } else { &pl.rod })
+            } else {
+                pl.rod_stats.clone()
+            };
             ui.set_spans(ID_ROD, &spans(&rod_pieces(rod, !v.rod.is_empty(), &stats)));
         }
         // the shop's bold name

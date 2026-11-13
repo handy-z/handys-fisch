@@ -417,17 +417,19 @@ pub fn catch_pieces(c: &Catch) -> Vec<Piece> {
     out
 }
 
-/// The wiki's stats for a rod: "Control 0.12 · Resilience 30 · Lure 70 · Luck 95 · Max 80,000 kg"; empty if unknown.
-pub fn rod_stats(rod: &str) -> String {
-    for r in RODS {
-        if r.name == rod {
-            return format!(
-                "Control {} · Resilience {} · Lure {} · Luck {} · Max {} kg",
-                r.control, r.resilience, r.lure, r.luck, r.max_weight
-            );
-        }
-    }
-    String::new()
+/// The wiki's stats for a rod as the game's Fishing Rods panel lists them ("Lure Speed: 70%" .. "Max KG: 80,000kg");
+/// empty if unknown.
+pub fn rod_stats(rod: &str) -> Vec<String> {
+    RODS.iter().find(|r| r.name == rod).map_or_else(Vec::new, |r| {
+        let kg = if r.max_weight == "∞" { "" } else { "kg" };
+        vec![
+            format!("Lure Speed: {}%", r.lure),
+            format!("Luck: {}%", r.luck),
+            format!("Control: {}", r.control),
+            format!("Resilience: {}%", r.resilience),
+            format!("Max KG: {}{kg}", r.max_weight),
+        ]
+    })
 }
 
 /// XP to go from `level` to the next (wiki: 190 × level, doubled every 500 levels from 1000).
@@ -751,13 +753,16 @@ mod tests {
         let c = parse_catch("You just caught a Batfish at 8kg! (1/10)").unwrap(); // no progress speed on the wiki
         assert!(c.resilience == "85" && c.progress_speed.is_empty());
         assert_eq!(
-            rod_stats("Fallen Rod"),
-            "Control 0.12 · Resilience 30 · Lure 70 · Luck 95 · Max 80,000 kg"
+            rod_stats("Rod Of The Depths"),
+            [
+                "Lure Speed: 75%",
+                "Luck: 130%",
+                "Control: 0.15",
+                "Resilience: 10%",
+                "Max KG: 30,000kg"
+            ]
         );
-        assert_eq!(
-            rod_stats("Kings Rod"),
-            "Control 0.15 · Resilience 35 · Lure 30 · Luck 85 · Max ∞ kg"
-        );
+        assert_eq!(rod_stats("Kings Rod")[4], "Max KG: ∞");
         assert!(rod_stats("Not A Rod").is_empty());
     }
 
