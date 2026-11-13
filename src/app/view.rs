@@ -93,7 +93,7 @@ pub fn coin_spans(coins: &str) -> Vec<Span> {
     vec![game_span(coins.into(), COINS, true, false, HUD_STROKE)]
 }
 
-/// "≈ 13,391 C$" like the HUD's coins, then " · " + rate plain.
+/// "≈ 13,391 C$" like the HUD's coins, then the rate plain on a second line (a dashboard tile's small line).
 pub fn earned_spans(value: i64, rate: &str) -> Vec<Span> {
     vec![
         game_span(
@@ -103,15 +103,16 @@ pub fn earned_spans(value: i64, rate: &str) -> Vec<Span> {
             false,
             HUD_STROKE,
         ),
-        Span::plain(&format!(" · {rate}")),
+        Span::plain(&format!("\n{rate}")),
     ]
 }
 
-/// "+6,000 xp" bold in the XP popup's #fff4d9 ("+247.5xp") outlined in LABEL_STROKE, then " · " + rate plain.
+/// "+6,000 xp" bold in the XP popup's #fff4d9 ("+247.5xp") outlined in LABEL_STROKE, then the rate plain on a
+/// second line.
 pub fn xp_spans(xp: i64, rate: &str) -> Vec<Span> {
     vec![
         game_span(format!("+{} xp", group_thousands(xp)), XP, true, false, LABEL_STROKE),
-        Span::plain(&format!(" · {rate}")),
+        Span::plain(&format!("\n{rate}")),
     ]
 }
 
@@ -293,13 +294,16 @@ mod tests {
         assert_eq!(coin_spans(""), vec![Span::plain("–")]);
         let earned = earned_spans(13391, "94,893/h");
         assert!(
-            earned.len() == 2
-                && earned[0].text == "≈ 13,391 C$"
-                && !earned[0].italic
-                && earned[1].text == " · 94,893/h"
+            earned.len() == 2 && earned[0].text == "≈ 13,391 C$" && !earned[0].italic && earned[1].text == "\n94,893/h"
         );
         let xp = xp_spans(6000, "–/h");
-        assert!(xp.len() == 2 && xp[0].text == "+6,000 xp" && xp[0].colors == hex_colors("fff4d9") && xp[0].bold);
+        assert!(
+            xp.len() == 2
+                && xp[1].text == "\n–/h"
+                && xp[0].text == "+6,000 xp"
+                && xp[0].colors == hex_colors("fff4d9")
+                && xp[0].bold
+        );
         let all = lifetime_spans(1234, 56, 7, 120);
         let text: String = all.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(text, "1,234 fish · 56 shiny · 7 sparkling · 120 h played");

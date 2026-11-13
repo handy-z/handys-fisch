@@ -11,7 +11,7 @@ use handy_sdk::input::focus::{ForegroundWatcher, activate_process_window};
 use handy_sdk::input::key::vk_name;
 use handy_sdk::ui::Tone;
 use handy_sdk::ui::d2d::add_font_file;
-use handy_sdk::ui::dashboard::{Dashboard, Span, Spec, check, page, rich_value, section, value};
+use handy_sdk::ui::dashboard::{Dashboard, Span, Spec, check, page, rich_value, section, tile, value};
 use handy_sdk::ui::overlay::StatusOverlay;
 use handy_sdk::ui::raster::render;
 use handy_sdk::util::paths::app_data_dir;
@@ -87,11 +87,11 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             check(ID_PERFECT, "Perfect cast\thold until the bar is full"),
             value(ID_LAST_CAST, "Last cast"),
             section("This session"),
-            value(ID_TIME, "Time fishing"),
-            value(ID_CATCH, "Catches").lines(2),
-            // RichValue rows: styled like the game's own label for the same thing (view.rs)
-            rich_value(ID_EARNED, "Earned"),
-            rich_value(ID_XP, "XP gained"),
+            // two per line, Catches | Earned over XP | Time; money and xp styled like the game's own labels (view.rs)
+            tile(ID_CATCH, "Catches"),
+            tile(ID_EARNED, "Earned"),
+            tile(ID_XP, "XP gained"),
+            tile(ID_TIME, "Time fishing"),
             section("Fish"), // kept across restarts
             // name, then kg · odds · value, in the game's colors and font; the fish's picture
             // the model fits the slot's smaller side: 3 lines fit the 2 text lines, the extra width helps long fish
@@ -329,7 +329,7 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
         ui.set_text(
             ID_CATCH,
             &format!(
-                "{} caught · {}\n{} lost · streak {streak}{best}",
+                "{} caught\n{} · {} lost · streak {streak}{best}",
                 bot.caught.load(SeqCst),
                 r.0,
                 bot.lost.load(SeqCst)
