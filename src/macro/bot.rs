@@ -1017,6 +1017,10 @@ impl Engine<'_> {
             self.rarest_odds = v.rarest_fish.as_ref().map_or(0, |f| f.odds);
         }
         let mut pending_catch: Option<(String, Instant, usize)> = None; // popup text, when it was seen, the popup
+        // A catch whose popup had no 3D model yet when it was read: the game fills it in a moment later, sometimes
+        // after the XP shows. Same tuple as pending_catch.
+        let mut pending_model: Option<(String, Instant, usize)> = None;
+        let mut next_model_try = Instant::now();
         let mut reel_missing = Sustained::default();
         let mut warned = false;
         while !stop.load(Relaxed) {
@@ -1066,9 +1070,12 @@ impl Engine<'_> {
                     bot.view.lock().unwrap().level = level_pieces(lv.level, lv.xp);
                 }
                 if let Some((text, popup)) = r.take_catch_popup().filter(|(t, _)| !is_item_popup(t)) {
-                    if let Some((t, _, prev)) = pending_catch.take() {
+                    if let Some((t, at, prev)) = pending_catch.take() {
                         let xp = r.catch_xp();
                         let look = r.catch_look(prev);
+                        if look.as_ref().is_some_and(|l| l.model.is_empty()) {
+                            pending_model = Some((t.clone(), at, prev));
+                        }
                         self.finish_catch(&t, xp, look);
                     }
                     self.count_catch(&text);
@@ -1104,10 +1111,34 @@ impl Engine<'_> {
                     None
                 };
                 if catch_settled(age, xp.is_some())
-                    && let Some((text, _, popup)) = pending_catch.take()
+                    && let Some((text, at, popup)) = pending_catch.take()
                 {
                     let look = reader.as_mut().and_then(|r| r.catch_look(popup));
+                    if look.as_ref().is_some_and(|l| l.model.is_empty()) {
+                        pending_model = Some((text.clone(), at, popup));
+                    }
                     self.finish_catch(&text, xp, look);
+                }
+            }
+            if let Some((text, at, popup)) = &pending_model
+                && !self.reeling
+                && now >= next_model_try
+            {
+                next_model_try = now + MS(200); // an empty popup costs ~60 reads; the model's meshes a few hundred once
+                let look = reader.as_mut().and_then(|r| r.catch_look(*popup));
+                match look {
+                    Some(l) if !l.model.is_empty() => {
+                        let mut v = self.bot.view.lock().unwrap();
+                        if v.last_catch == *text {
+                            v.last_model = Some(Arc::new(l.model));
+                        }
+                        drop(v);
+                        pending_model = None;
+                    }
+                    // popup gone, or no model after 4 s (some popups show only the flat icon)
+                    None => pending_model = None,
+                    Some(_) if now - *at > MS(4000) => pending_model = None,
+                    Some(_) => {}
                 }
             }
             let dt = now - prev_tick;
