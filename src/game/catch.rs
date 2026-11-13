@@ -1,4 +1,4 @@
-use super::fisch_names::{ENCHANTS, EnchantInfo, MUTATIONS, RARITIES, RODS, SIZE_COLORS, SPECIES, SpeciesInfo};
+use super::fisch_names::{BAITS, ENCHANTS, EnchantInfo, MUTATIONS, RARITIES, RODS, SIZE_COLORS, SPECIES, SpeciesInfo};
 
 /// One line of Fisch's catch popup: "You just caught a Big Fallen Bigeye Trevally at 3.5kg! (1/12)".
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -422,6 +422,50 @@ pub fn rod_stats(rod: &str) -> Vec<String> {
     })
 }
 
+/// The wiki's stats of an equipped bait, one display line each, only those it has (empty when unknown).
+pub fn bait_stats(bait: &str) -> Vec<String> {
+    BAITS.iter().find(|b| b.name == bait).map_or_else(Vec::new, |b| {
+        [
+            ("Preferred Luck", b.preferred_luck),
+            ("Luck", b.universal_luck),
+            ("Resilience", b.resilience),
+            ("Lure Speed", b.lure_speed),
+        ]
+        .iter()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(k, v)| format!("{k}: {v}%"))
+        .collect()
+    })
+}
+
+/// The wiki's ability text for a bait ("30% chance for Frostnova (8×). +50% Progress Speed"); empty if none.
+pub fn bait_ability(bait: &str) -> &'static str {
+    BAITS.iter().find(|b| b.name == bait).map_or("", |b| b.ability)
+}
+
+/// What a weather does to fishing, from fischipedia.org/wiki/Weather (2026-11-13); empty for none worth showing.
+pub fn weather_effect(weather: &str) -> &'static str {
+    match weather {
+        "Stormy" => "+20% lure speed · −15% resilience · Electric 10%",
+        "Eclipse" => "Solarblaze 10%",
+        "Rainbow" => "8× luck · sells 1.5× · Mythical 15%",
+        "Aurora Borealis" => "7× luck · Aurora 1%",
+        "Starfall" => "+10% progress speed · Nova 10%",
+        "Tropical Squall" => "2× luck · Squalled 15%",
+        "Raging Squall" => "4× luck · Squalled 25%",
+        "Frost Moon" | "Tropical Sun" | "Jack-o-Moon" => "9× luck",
+        "Sovereign Surge" => "2× luck · Sovereign 5%",
+        "Sovereign Storm" => "4× luck · Sovereign 5%",
+        "Sovereign Reckoning" => "8× luck · Sovereign 5%",
+        "Abyssal Alignment" => "+20% weight · Abyssal 5%",
+        "Celestial Congregation" => "2.25× luck · Celestial 5%",
+        "Evershifting Eclipse" => "+25% XP · Solarblaze 5%",
+        "Lunar Eclipse" => "Aurora, Celestial, Lunar, Nova 5% each",
+        "Meteoric Outburst" => "better meteor loot · Chaotic 5%",
+        _ => "",
+    }
+}
+
 /// XP to go from `level` to the next (wiki: 190 × level, doubled every 500 levels from 1000).
 pub fn level_xp(level: i32) -> i64 {
     (190 * i64::from(level)) << (if level >= 1000 { (level - 1000) / 500 + 1 } else { 0 })
@@ -778,6 +822,15 @@ mod tests {
         assert_eq!(rod_stats("Kings Rod")[4], "Max KG: ∞");
         assert_eq!(rod_stats("Tryhard Rod")[4], "Max KG: ∞"); // the wiki writes 1e+15
         assert!(rod_stats("Not A Rod").is_empty());
+        assert_eq!(
+            bait_stats("Shrimp"),
+            ["Preferred Luck: +95%", "Luck: +25%", "Resilience: -5%"]
+        );
+        assert_eq!(
+            bait_stats("Garbage"),
+            ["Luck: -500%", "Resilience: +50%", "Lure Speed: -5%"]
+        );
+        assert!(bait_stats("Not A Bait").is_empty());
     }
 
     #[test]

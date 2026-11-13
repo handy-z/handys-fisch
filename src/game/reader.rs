@@ -4,6 +4,7 @@ use std::sync::Arc;
 use handy_sdk::app::updater_thread::Session;
 use handy_sdk::roblox::instance::{child_by_class, child_by_name, children, data_model, instance_class, instance_name};
 use handy_sdk::roblox::memory::Memory;
+use handy_sdk::roblox::offsets::Offsets;
 use handy_sdk::roblox::read::{
     CachedPath, VisibleProbe, character_of, gui_image, gui_layout_order, gui_size, gui_text, int_value, local_player,
     number_value, object_value, parent_of, part_position, player_gui, string_value,
@@ -141,6 +142,55 @@ pub struct PlayerInfo {
     pub seconds_played: f64,
 }
 
+/// Server-wide conditions from ReplicatedStorage/world, for the dashboard. Each field stays empty when it can't be read;
+/// the game's "None" is left out.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct World {
+    /// weather ("Windy"), then its active secondary weathers (squall, sovereign, meteorological, astral)
+    pub weather: Vec<String>,
+    /// cycle ("Day" / "Night"), season ("Winter")
+    pub cycle: String,
+    pub season: String,
+    /// event, admin_event, then "Meteor" / "Blizzard" while those are on
+    pub events: Vec<String>,
+    /// server multipliers that aren't 1: ("Luck", 2.0)
+    pub boosts: Vec<(&'static str, f64)>,
+    /// the game's version ("2.09.2")
+    pub version: String,
+}
+
+/// world/<value> -> what the dashboard calls the multiplier
+const BOOSTS: [(&str, &str); 7] = [
+    ("luck_Luck", "Luck"),
+    ("luck_Server", "Server luck"),
+    ("luck_Shiny", "Shiny"),
+    ("luck_Sparkling", "Sparkling"),
+    ("luck_Mutation", "Mutation"),
+    ("luck_Weight", "Weight"),
+    ("multiple_XP", "XP"),
+];
+
+/// A parent's children by name; the names are read again only when its children change.
+#[derive(Default)]
+struct NamedKids {
+    kids: Vec<usize>,
+    by_name: HashMap<String, usize>,
+}
+
+impl NamedKids {
+    fn refresh(&mut self, m: &dyn Memory, o: &Offsets, parent: usize) -> &HashMap<String, usize> {
+        let kids = children(m, o, parent);
+        if kids != self.kids {
+            self.by_name = kids
+                .iter()
+                .filter_map(|k| Some((instance_name(m, o, *k)?, *k)))
+                .collect();
+            self.kids = kids;
+        }
+        &self.by_name
+    }
+}
+
 /// `c` re-made when `names` differ from last time (they hold the rod's or the player's name).
 fn path_to(m: &dyn Memory, sess: &Session, c: &mut Option<CachedPath>, names: &[&str], root: usize) -> usize {
     if c.as_ref().is_none_or(|c| c.names() != names) {
@@ -193,6 +243,9 @@ pub struct GameReader {
     stat_paths: HashMap<String, CachedPath>,
     rod_stats: Option<CachedPath>,
     bestiary: Option<CachedPath>,
+    rs_world: CachedPath, // ReplicatedStorage/world, from the DataModel
+    world_kids: NamedKids,
+    weather_kids: NamedKids,
 }
 
 impl GameReader {
@@ -236,6 +289,9 @@ impl GameReader {
             stat_paths: HashMap::new(),
             rod_stats: None,
             bestiary: None,
+            rs_world: CachedPath::new(&["ReplicatedStorage", "world"]),
+            world_kids: NamedKids::default(),
+            weather_kids: NamedKids::default(),
         }
     }
 
@@ -458,6 +514,62 @@ impl GameReader {
         );
         info.bestiary = gui_text(p, o, row).unwrap_or_default();
         Some(info)
+    }
+
+    /// Weather, time, season, events and server boosts (ReplicatedStorage/world); ~40 reads.
+    pub fn world(&mut self) -> Option<World> {
+        let sess = self.sess.clone();
+        let (p, o) = (&sess.proc, &sess.offsets);
+        let w = self.rs_world.get(p, o, data_model(p, o));
+        if w == 0 {
+            return None;
+        }
+        let k = self.world_kids.refresh(p, o, w);
+        let text = |k: &HashMap<String, usize>, n: &str| {
+            k.get(n)
+                .and_then(|v| string_value(p, o, *v))
+                .filter(|s| !s.is_empty() && s != "None")
+        };
+        let m: &dyn Memory = p;
+        let on = |n: &str| {
+            k.get(n)
+                .and_then(|v| m.get::<u8>(o.at(*v, "Misc.Value")))
+                .is_some_and(|b| b != 0)
+        };
+        let mut out = World {
+            cycle: text(k, "cycle").unwrap_or_default(),
+            season: text(k, "season").unwrap_or_default(),
+            version: text(k, "version").unwrap_or_default(),
+            ..World::default()
+        };
+        out.weather.extend(text(k, "weather"));
+        out.events
+            .extend(["event", "admin_event"].iter().filter_map(|n| text(k, n)));
+        for (n, label) in [("meteor_active", "Meteor"), ("blizzard_active", "Blizzard")] {
+            if on(n) {
+                out.events.push(label.into());
+            }
+        }
+        for (n, label) in BOOSTS {
+            if let Some(x) = k.get(n).and_then(|v| number_value(p, o, *v))
+                && x > 0.0
+                && (x - 1.0).abs() > 1e-6
+            {
+                out.boosts.push((label, x));
+            }
+        }
+        let weather = k.get("weather").copied().unwrap_or(0);
+        if weather != 0 {
+            let wk = self.weather_kids.refresh(p, o, weather);
+            for n in ["squall", "sovereign", "meteorological", "astral"] {
+                if let Some(t) = text(wk, n)
+                    && !out.weather.contains(&t)
+                {
+                    out.weather.push(t);
+                }
+            }
+        }
+        Some(out)
     }
 
     /// The "+45xp" popup shown at a catch (hud/safezone/xpup), while it's visible
@@ -867,6 +979,10 @@ mod tests {
         cost("playerInfo", 100, &mut |r| {
             let _ = r.player_info();
         });
+        cost("world", 100, &mut |r| {
+            let _ = r.world();
+        });
+        println!("  world={:?}", r.world());
         if let Some(pi) = r.player_info() {
             println!("  rod='{}' rod_stats={:?}", pi.rod, pi.rod_stats);
         }

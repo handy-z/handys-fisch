@@ -19,10 +19,10 @@ use windows::Win32::UI::WindowsAndMessaging::SHOW_WINDOW_CMD;
 use super::config::SettingsStore;
 use super::fish_pictures::FishPictures;
 use super::view::{
-    bestiary_color, catch_spans, coin_spans, earned_spans, gps_text, hms, lifetime_spans, overlay_text, per_hour,
-    save_warning, spans, styled, xp_spans,
+    bestiary_color, boost_spans, catch_spans, coin_spans, earned_spans, gps_text, hms, lifetime_spans, overlay_text,
+    per_hour, save_warning, spans, styled, tally_spans, time_text, weather_spans, xp_spans,
 };
-use crate::game::catch::{Catch, LABEL_STROKE, rod_pieces, rod_stat_pieces, rod_stats};
+use crate::game::catch::{Catch, LABEL_STROKE, bait_ability, bait_stats, rod_pieces, rod_stat_pieces, rod_stats};
 use crate::r#macro::bot::{Bot, release_inputs};
 use handy_sdk::roblox::http::win_http_get_bytes;
 
@@ -56,6 +56,10 @@ const ID_LIFETIME: i32 = 16;
 const ID_PERFECT: i32 = 17;
 const ID_LAST_CAST: i32 = 18;
 const ID_ROD_CARD: i32 = 19;
+const ID_WEATHER: i32 = 20;
+const ID_DAYTIME: i32 = 21;
+const ID_BOOSTS: i32 = 22;
+const ID_TALLY: i32 = 23;
 
 /// Shows the dashboard and the "auto fish: on/off" overlay until the window is closed. The first close lets the bot
 /// finish the fish (up to 3 min); a second close is immediate. UI thread only, one at a time.
@@ -85,12 +89,17 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             check(ID_ON, "Auto fish"),
             check(ID_PERFECT, "Perfect cast\thold until the bar is full"),
             value(ID_LAST_CAST, "Last cast"),
+            section("Conditions"), // the server's, from ReplicatedStorage/world
+            rich_value(ID_WEATHER, "Weather").lines(2),
+            value(ID_DAYTIME, "Time"),
+            rich_value(ID_BOOSTS, "Boosts"),
             section("This session"),
             // two per line, Catches | Earned over XP | Time; money and xp styled like the game's own labels (view.rs)
             tile(ID_CATCH, "Catches"),
             tile(ID_EARNED, "Earned"),
             tile(ID_XP, "XP gained"),
             tile(ID_TIME, "Time fishing"),
+            rich_value(ID_TALLY, "Rarities").lines(2),
             section("Fish"), // kept across restarts
             // Last catch | Rarest: the fish's picture over name · rarity, kg · odds, value · xp in the game's colors;
             // the picture is about 2:1 across the ~220 DIP tile, as long fish are
@@ -100,7 +109,7 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             section("Gear"),
             // the wiki's pictures over the names, like the Fish cards; tall, as rod pictures are (192×362)
             tile(ID_ROD_CARD, "Rod").picture(130).lines(3), // enchants, name, equipped
-            tile(ID_BAIT, "Bait").picture(130).lines(2),
+            tile(ID_BAIT, "Bait").picture(130).lines(5),    // name, wiki stats two to a line, ability
             // two to a line (Rod Of The Depths' 9 take 6 lines); room for a long one more
             rich_value(ID_ROD, "Stats").lines(7),
             section("Progress"),
@@ -135,7 +144,29 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
         ui.set_check(ID_PERFECT, st.perfect_cast);
         let status = deps.updater.status();
         let v = bot.view();
-        ui.set_status_tip(&deps.updater.detail());
+        let version = if v.world.version.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "
+Fisch {}",
+                v.world.version
+            ) // the game's version, to tell an update that moved things
+        };
+        ui.set_status_tip(&format!("{}{version}", deps.updater.detail()));
+        ui.set_spans(ID_WEATHER, &weather_spans(&v.world));
+        ui.set_text(ID_DAYTIME, &time_text(&v.world));
+        ui.set_spans(ID_BOOSTS, &boost_spans(&v.world));
+        ui.set_spans(
+            ID_TALLY,
+            &tally_spans(
+                &v.rarities,
+                v.mutated,
+                v.shiny,
+                v.sparkling,
+                (bot.perfect_catches.load(SeqCst), bot.won_reels.load(SeqCst)),
+            ),
+        );
         let unsaved = save_warning(bot.unsaved_rows.load(SeqCst), bot.settings_unsaved.load(SeqCst));
         if quit_by.get().is_some() {
             // the closing status stays
@@ -189,7 +220,28 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             &if bait.is_empty() {
                 styled("none", "9a9a9a", false, "")
             } else {
-                styled(bait, "", true, "")
+                let mut s = styled(bait, "", true, "");
+                let stats = bait_stats(bait);
+                if !stats.is_empty() {
+                    s.push(Span::plain(
+                        "
+",
+                    ));
+                    s.extend(spans(&rod_stat_pieces(&stats)));
+                }
+                let ability = bait_ability(bait);
+                if !ability.is_empty() {
+                    s.extend(styled(
+                        &format!(
+                            "
+{ability}"
+                        ),
+                        "9a9a9a",
+                        false,
+                        "",
+                    ));
+                }
+                s
             },
         );
         // the wiki's pictures, as for fish; nothing (an empty path) while none or not downloaded yet

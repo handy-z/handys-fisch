@@ -3,7 +3,9 @@ use handy_sdk::ui::theme::rgb;
 use handy_sdk::util::text::group_thousands;
 use windows::Win32::Foundation::COLORREF;
 
-use crate::game::catch::{Catch, HUD_STROKE, LABEL_STROKE, Piece, catch_pieces};
+use crate::game::catch::{Catch, HUD_STROKE, LABEL_STROKE, Piece, catch_pieces, weather_effect};
+use crate::game::fisch_names::RARITIES;
+use crate::game::reader::World;
 
 /// "ff6600 ffc738" -> those colors; anything that isn't 6 hex digits is skipped.
 pub fn hex_colors(hex: &str) -> Vec<COLORREF> {
@@ -44,6 +46,113 @@ pub fn catch_spans(fish: &Option<Catch>, popup: &str) -> Vec<Span> {
         None => vec![Span::plain(if popup.is_empty() { "–" } else { popup })],
         Some(f) => spans(&catch_pieces(f)),
     }
+}
+
+const MUTED: &str = "9a9a9a";
+
+/// "Windy · Aurora Borealis" bold, then their wiki effects muted on a second line ("7× luck · Aurora 1%"); "–"
+/// unread.
+pub fn weather_spans(w: &World) -> Vec<Span> {
+    if w.weather.is_empty() {
+        return styled("–", "", false, "");
+    }
+    let mut out = styled(&w.weather.join(" · "), "", true, "");
+    let effects: Vec<&str> = w
+        .weather
+        .iter()
+        .map(|n| weather_effect(n))
+        .filter(|e| !e.is_empty())
+        .collect();
+    if !effects.is_empty() {
+        out.extend(styled(
+            &format!(
+                "
+{}",
+                effects.join(" · ")
+            ),
+            MUTED,
+            false,
+            "",
+        ));
+    }
+    out
+}
+
+/// "Night · Winter"
+pub fn time_text(w: &World) -> String {
+    let parts: Vec<&str> = [w.cycle.as_str(), w.season.as_str()]
+        .into_iter()
+        .filter(|p| !p.is_empty())
+        .collect();
+    if parts.is_empty() {
+        "–".into()
+    } else {
+        parts.join(" · ")
+    }
+}
+
+/// Events bold, then the server multipliers ("Luck ×2 · XP ×1.5"); a muted "none" when there are neither.
+pub fn boost_spans(w: &World) -> Vec<Span> {
+    let boosts: Vec<String> = w.boosts.iter().map(|(n, x)| format!("{n} ×{}", times(*x))).collect();
+    if w.events.is_empty() && boosts.is_empty() {
+        return styled("none", MUTED, false, "");
+    }
+    let mut out = styled(&w.events.join(" · "), "", true, "");
+    if !boosts.is_empty() {
+        let sep = if w.events.is_empty() { "" } else { " · " };
+        out.extend(styled(&format!("{sep}{}", boosts.join(" · ")), "", false, ""));
+    }
+    out
+}
+
+/// 2 -> "2", 1.15 -> "1.15"
+fn times(x: f64) -> String {
+    let s = format!("{x:.2}");
+    s.trim_end_matches('0').trim_end_matches('.').into()
+}
+
+/// "12 Common · 3 Rare" (most first, each in its rarity's color), then muted "2 mutated · 1 shiny · 4/6 perfect"; the
+/// second line only with something on it.
+pub fn tally_spans(
+    rarities: &[(String, i32)],
+    mutated: i32,
+    shiny: i32,
+    sparkling: i32,
+    perfect: (i32, i32),
+) -> Vec<Span> {
+    let mut sorted = rarities.to_vec();
+    sorted.sort_by_key(|r| std::cmp::Reverse(r.1)); // stable: ties stay in first-caught order
+    let mut out = Vec::new();
+    for (i, (name, n)) in sorted.iter().enumerate() {
+        let color = RARITIES.iter().find(|r| r.name == name).map_or("", |r| r.color);
+        out.push(Span::plain(&format!("{}{n} ", if i > 0 { " · " } else { "" })));
+        out.push(game_span(name.clone(), color, true, false, ""));
+    }
+    if out.is_empty() {
+        out.push(Span::plain("–"));
+    }
+    let mut extra = Vec::new();
+    for (n, what) in [(mutated, "mutated"), (shiny, "shiny"), (sparkling, "sparkling")] {
+        if n > 0 {
+            extra.push(format!("{n} {what}"));
+        }
+    }
+    if perfect.1 > 0 {
+        extra.push(format!("{}/{} perfect", perfect.0, perfect.1));
+    }
+    if !extra.is_empty() {
+        out.extend(styled(
+            &format!(
+                "
+{}",
+                extra.join(" · ")
+            ),
+            MUTED,
+            false,
+            "",
+        ));
+    }
+    out
 }
 
 const COINS: &str = "fffde4"; // hud/safezone/coins at rest
@@ -185,6 +294,38 @@ pub fn save_warning(unsaved_rows: i32, settings_unsaved: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn text(s: &[Span]) -> String {
+        s.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    #[test]
+    fn conditions_and_tally_text() {
+        let w = World {
+            weather: vec!["Windy".into(), "Aurora Borealis".into()],
+            cycle: "Night".into(),
+            season: "Winter".into(),
+            events: vec!["Meteor".into()],
+            boosts: vec![("Luck", 2.0), ("Mutation", 1.15)],
+            ..World::default()
+        };
+        assert_eq!(
+            text(&weather_spans(&w)),
+            "Windy · Aurora Borealis
+7× luck · Aurora 1%"
+        );
+        assert_eq!(time_text(&w), "Night · Winter");
+        assert_eq!(text(&boost_spans(&w)), "Meteor · Luck ×2 · Mutation ×1.15");
+        assert_eq!(text(&boost_spans(&World::default())), "none");
+        assert_eq!(time_text(&World::default()), "–");
+        let r = [("Common".to_owned(), 2), ("Rare".to_owned(), 5)];
+        assert_eq!(
+            text(&tally_spans(&r, 1, 0, 0, (3, 4))),
+            "5 Rare · 2 Common
+1 mutated · 3/4 perfect"
+        );
+        assert_eq!(text(&tally_spans(&[], 0, 0, 0, (0, 0))), "–");
+    }
 
     #[test]
     fn view_bestiary_color_like_the_player_list() {

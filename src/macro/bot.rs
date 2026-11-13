@@ -18,7 +18,7 @@ use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THR
 use crate::app::config::{Settings, SettingsStore, load_settings};
 use crate::game::catch::{Catch, Piece, is_item_popup, kg_text, level_pieces, parse_catch};
 use crate::game::reader::{
-    CatchLook, FishState, GameReader, PlayerInfo, ROD_IDLE, ROD_LURE, ROD_REELING, line_out, reel_state,
+    CatchLook, FishState, GameReader, PlayerInfo, ROD_IDLE, ROD_LURE, ROD_REELING, World, line_out, reel_state,
 };
 
 const MS: fn(u64) -> Duration = Duration::from_millis;
@@ -479,6 +479,29 @@ pub struct View {
     pub stopped: String,
     /// the bot's last cast: power bar when it let go, then the game's rating ("97% · PERFECT!")
     pub last_cast: String,
+    /// this session's catches per rarity, in first-caught order (unknown fish left out)
+    pub rarities: Vec<(String, i32)>,
+    /// this session's catches with any mutation besides Shiny / Sparkling, and with those
+    pub mutated: i32,
+    pub shiny: i32,
+    pub sparkling: i32,
+    /// ReplicatedStorage/world, read about once a second
+    pub world: World,
+}
+
+impl View {
+    fn tally(&mut self, c: &Catch) {
+        if !c.rarity.is_empty() {
+            match self.rarities.iter_mut().find(|r| r.0 == c.rarity) {
+                Some(r) => r.1 += 1,
+                None => self.rarities.push((c.rarity.clone(), 1)),
+            }
+        }
+        let has = |m: &str| c.mutations.iter().any(|x| x == m);
+        self.shiny += i32::from(has("Shiny"));
+        self.sparkling += i32::from(has("Sparkling"));
+        self.mutated += i32::from(c.mutations.iter().any(|m| m != "Shiny" && m != "Sparkling"));
+    }
 }
 
 /// Cast -> shake -> reel loop. Input is sent only while Roblox is the foreground window.
@@ -513,6 +536,9 @@ pub struct Bot {
     /// this session's casts the game rated, and its "PERFECT!"s
     pub casts: AtomicI32,
     pub perfect_casts: AtomicI32,
+    /// reels the bot played to a catch, and those that never lost progress (the game's perfect catch: +50% XP)
+    pub won_reels: AtomicI32,
+    pub perfect_catches: AtomicI32,
     /// CSV lines a locked file refused, still in memory
     pub unsaved_rows: AtomicI32,
     /// config.ini didn't read back what was just saved
@@ -557,6 +583,7 @@ struct Engine<'a> {
     reel_t0: Instant,
     reel_rod: String, // rod used for the reel being recorded
     last_progress: f32,
+    reel_dropped: bool, // progress went down this reel: not a perfect catch
     prev: Option<Sample>,
     bar_v: f32, // per s, smoothed
     fish_v: f32,
@@ -598,6 +625,8 @@ impl Bot {
             active_ms: AtomicI64::new(0),
             casts: AtomicI32::new(0),
             perfect_casts: AtomicI32::new(0),
+            won_reels: AtomicI32::new(0),
+            perfect_catches: AtomicI32::new(0),
             unsaved_rows: AtomicI32::new(0),
             settings_unsaved: AtomicBool::new(false),
             hold_slash: AtomicBool::new(false),
@@ -642,6 +671,7 @@ impl Bot {
             reel_t0: now,
             reel_rod: String::new(),
             last_progress: 0.0,
+            reel_dropped: false,
             prev: None,
             bar_v: 0.0,
             fish_v: 0.0,
@@ -678,7 +708,12 @@ impl Engine<'_> {
     fn end_reel(&mut self) {
         self.reeling = false;
         let won = reel_won(self.last_progress);
-        if !won {
+        if won {
+            self.bot.won_reels.fetch_add(1, SeqCst);
+            if !self.reel_dropped {
+                self.bot.perfect_catches.fetch_add(1, SeqCst);
+            }
+        } else {
             // catches are counted from the popup (count_catch)
             self.bot.lost.fetch_add(1, SeqCst);
             self.lost_streak += 1;
@@ -779,6 +814,9 @@ impl Engine<'_> {
             let mut v = bot.view.lock().unwrap();
             v.last_catch = text.into();
             v.last_fish = c.clone();
+            if let Some(c) = &c {
+                v.tally(c);
+            }
             if let Some(f) = c.as_ref().filter(|f| f.odds > self.rarest_odds) {
                 self.rarest_odds = f.odds;
                 v.rarest = text.into();
@@ -864,6 +902,9 @@ impl Engine<'_> {
                 (self.bar_v, self.fish_v, self.progress_v) = (0.0, 0.0, 0.0);
                 self.reel_log = ReelLog::default();
                 self.trace.clear();
+                self.reel_dropped = false;
+            } else if r.progress < self.last_progress - 1e-3 {
+                self.reel_dropped = true;
             }
             self.reeling = true;
             self.last_progress = r.progress;
@@ -1001,7 +1042,7 @@ impl Engine<'_> {
         let mut sess: Option<Arc<Session>> = None;
         let mut reader: Option<GameReader> = None;
         let mut prev_tick = Instant::now();
-        let (mut next_popup_check, mut next_player_info) = (prev_tick, prev_tick);
+        let (mut next_popup_check, mut next_player_info, mut next_world) = (prev_tick, prev_tick, prev_tick);
         let mut pos_at = prev_tick; // when view.player.pos was read
         let mut fishing = Duration::ZERO; // active_ms before rounding
         {
@@ -1092,6 +1133,12 @@ impl Engine<'_> {
                     };
                     pos_at = now;
                     v.player = p;
+                }
+                if now >= next_world {
+                    next_world = now + MS(1000); // ~40 reads; the weather changes with the day/night cycle
+                    if let Some(w) = r.world() {
+                        bot.view.lock().unwrap().world = w;
+                    }
                 }
             }
             if let Some((_, at, _)) = &pending_catch {
@@ -1206,6 +1253,20 @@ impl Engine<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn view_tallies_rarities_and_mutations() {
+        let mut v = View::default();
+        for t in [
+            "You just caught a Shiny Grey Carp at 5.8kg! (1/50)",
+            "You just caught a Grey Carp at 5.8kg! (1/50)",
+            "Extra! You just caught a Abyssal Deep-sea Hatchetfish at 3.2kg! (1/5)",
+        ] {
+            v.tally(&parse_catch(t).unwrap());
+        }
+        assert_eq!(v.rarities[0], ("Uncommon".to_owned(), 2)); // Grey Carp
+        assert_eq!((v.shiny, v.mutated, v.sparkling), (1, 1, 0));
+    }
     use crate::game::reader::{ROD_REELING, Reel};
     use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE};
     use windows::Win32::Storage::FileSystem::{CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, OPEN_EXISTING};
