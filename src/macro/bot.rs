@@ -327,7 +327,7 @@ pub struct SafetyGuard {
     rod_char: usize, // character the rod was last seen on while on (0: not since it turned on)
     rod_gone_at: Option<Instant>, // when the rod left that character
     slash_at: Option<Instant>, // when to send the held-back '/'
-    finish_reel: bool, // turned off mid-reel: it plays out, then the rod is unequipped
+    finish_fish: bool, // turned off mid-fish: it plays out (bite, shake, reel), then the rod is unequipped
     unequip_at: Option<Instant>, // that reel ended: when to (re)try the unequip
     unequip_tries: u8,
 }
@@ -342,20 +342,21 @@ impl SafetyGuard {
             just_on: t.on && !self.was_on, // F1, dashboard
             ..Default::default()
         };
-        if !t.on && self.was_on && out {
-            self.unequip_pending = true; // turned off with the line out
-        }
-        // Turned off mid-reel: the fish is already hooked, so the reel plays out (only the reel: no new cast), then the
-        // rod is unequipped. Back on meanwhile: fishing as usual.
+        // Turned off with the line out or mid-reel: this fish plays out (bite, shake, reel; no new cast), caught or got
+        // away, then the rod is unequipped. Back on meanwhile: fishing as usual.
         let reeling = s.is_some_and(|s| reel_state(s.rod_state));
-        if !t.on && self.was_on && reeling {
-            self.finish_reel = true;
+        if !t.on && self.was_on && (out || reeling) {
+            self.finish_fish = true;
+        }
+        if t.quit_requested && self.finish_fish && !reeling {
+            self.finish_fish = false; // closing: no waiting for a bite, the line comes in now
+            self.unequip_pending = out;
         }
         if t.on {
-            self.finish_reel = false;
+            self.finish_fish = false;
             self.unequip_at = None;
-        } else if self.finish_reel && !reeling {
-            self.finish_reel = false;
+        } else if self.finish_fish && !out && !reeling {
+            self.finish_fish = false;
             // The game ignores the rod's key for a moment after a catch (a cast held through it goes ~0.2 s after the
             // rod turns idle, seen live), so the first press waits past that.
             self.unequip_at = Some(t.now + MS(500));
@@ -414,7 +415,7 @@ impl SafetyGuard {
             a.stop_reason = "chat opened".into();
         }
         // rod_gone_at: don't re-equip
-        a.fish = (a.on || self.finish_reel)
+        a.fish = (a.on || self.finish_fish)
             && t.focused
             && s.is_some()
             && !typing
@@ -445,9 +446,14 @@ impl SafetyGuard {
         a
     }
 
-    /// turned off with the line out, waiting for focus
+    /// the line has to come in (chat opened, closing), waiting for focus
     pub fn unequip_pending(&self) -> bool {
         self.unequip_pending
+    }
+
+    /// turned off mid-fish, playing it out
+    pub fn finishing(&self) -> bool {
+        self.finish_fish
     }
 }
 
@@ -1247,6 +1253,7 @@ impl Engine<'_> {
                 bot.quit_requested.load(SeqCst)
                     && !bot.on.load(SeqCst)
                     && pending_catch.is_none()
+                    && !self.guard.finishing()
                     && (!self.guard.unequip_pending() || !fg),
                 SeqCst,
             );
@@ -1443,15 +1450,34 @@ mod tests {
     }
 
     #[test]
-    fn bot_guard_turned_off_with_line_out_unequips_when_focused() {
+    fn bot_guard_turned_off_with_line_out_finishes_the_fish_then_unequips() {
         let t0 = Instant::now();
         let mut g = SafetyGuard::default();
-        let s = rod_out(Some(ROD_LURE), false);
+        let (s, reeling, idle) = (
+            rod_out(Some(ROD_LURE), false),
+            rod_out(Some(ROD_REELING), false),
+            rod_out(Some(ROD_IDLE), false),
+        );
         assert!(g.tick(&tk(t0, true, true, false, false, &s)).fish);
         let a = g.tick(&tk(t0 + MS(5), false, false, false, false, &s)); // dashboard click: Roblox lost focus
-        assert!(!a.unequip && g.unequip_pending() && a.stop_reason.is_empty());
-        assert!(g.tick(&tk(t0 + MS(10), false, true, false, false, &s)).unequip);
-        assert!(!g.tick(&tk(t0 + MS(15), false, true, false, false, &s)).unequip);
+        assert!(!a.on && !a.fish && !a.unequip && a.stop_reason.is_empty() && g.finishing()); // paused, no input
+        assert!(g.tick(&tk(t0 + MS(10), false, true, false, false, &s)).fish); // focused: waits for the bite
+        assert!(g.tick(&tk(t0 + MS(20), false, true, false, false, &reeling)).fish); // bit: reels it in
+        let a = g.tick(&tk(t0 + MS(30), false, true, false, false, &idle));
+        assert!(!a.fish && a.reel_over && !a.unequip && !g.finishing());
+        assert!(g.tick(&tk(t0 + MS(600), false, true, false, false, &idle)).unequip);
+        // got away (the line came in without a reel): unequipped all the same
+        let mut g = SafetyGuard::default();
+        g.tick(&tk(t0, true, true, false, false, &s));
+        g.tick(&tk(t0 + MS(5), false, true, false, false, &s));
+        assert!(!g.tick(&tk(t0 + MS(10), false, true, false, false, &idle)).fish);
+        assert!(g.tick(&tk(t0 + MS(600), false, true, false, false, &idle)).unequip);
+        // closing while it waits for a bite: the line comes in now
+        let mut g = SafetyGuard::default();
+        g.tick(&tk(t0, true, true, false, false, &s));
+        g.tick(&tk(t0 + MS(5), false, true, false, false, &s));
+        let a = g.tick(&tk(t0 + MS(10), false, true, true, false, &s));
+        assert!(a.unequip && !g.finishing());
         let idle = rod_out(Some(ROD_IDLE), false); // turned off with the line in: nothing to do
         let mut g2 = SafetyGuard::default();
         g2.tick(&tk(t0, true, true, false, false, &idle));
