@@ -12,6 +12,7 @@ use handy_sdk::input::hooks::KeyPoller;
 use handy_sdk::input::key::{BACKSLASH, ENTER, Key, MOUSE_LEFT, SLASH, SPACE, digit_key, key_down};
 use handy_sdk::input::send::{press, release, tap};
 use handy_sdk::roblox::events::RobloxWatcher;
+use handy_sdk::ui::raster::Tri;
 use handy_sdk::util::timing::{Sustained, precise_wait};
 use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST};
 
@@ -20,6 +21,7 @@ use crate::game::catch::{Catch, Piece, is_item_popup, kg_text, level_pieces, par
 use crate::game::reader::{
     CatchLook, FishState, GameReader, PlayerInfo, ROD_IDLE, ROD_LURE, ROD_REELING, World, line_out, reel_state,
 };
+use crate::r#macro::rarest_model;
 
 const MS: fn(u64) -> Duration = Duration::from_millis;
 
@@ -471,7 +473,11 @@ pub struct View {
     pub level: Vec<Piece>,
     /// the same popups parsed; None when they don't
     pub last_fish: Option<Catch>,
+    /// last_fish's 3D model from its popup, when it could be read; not persisted
+    pub last_model: Option<Arc<Vec<Tri>>>,
     pub rarest_fish: Option<Catch>,
+    /// rarest_fish's 3D model; saved next to the catch log (rarest_model.bin) so it survives a restart
+    pub rarest_model: Option<Arc<Vec<Tri>>>,
     pub player: PlayerInfo,
     /// studs/s between the last two position reads (the GPS's "s/s")
     pub speed: Option<f32>,
@@ -502,6 +508,19 @@ impl View {
         self.sparkling += i32::from(has("Sparkling"));
         self.mutated += i32::from(c.mutations.iter().any(|m| m != "Shiny" && m != "Sparkling"));
     }
+}
+
+fn rarest_model_file(catch_log: &Path) -> PathBuf {
+    catch_log.with_file_name("rarest_model.bin")
+}
+
+/// Gives the rarest catch its model when `text` is that catch; the model to save then, else None.
+fn set_rarest_model(v: &mut View, text: &str, model: &Option<Arc<Vec<Tri>>>) -> Option<Arc<Vec<Tri>>> {
+    if v.rarest != text || model.is_none() {
+        return None;
+    }
+    v.rarest_model.clone_from(model);
+    model.clone()
 }
 
 /// Cast -> shake -> reel loop. Input is sent only while Roblox is the foreground window.
@@ -817,10 +836,12 @@ impl Engine<'_> {
             if let Some(c) = &c {
                 v.tally(c);
             }
+            v.last_model = None;
             if let Some(f) = c.as_ref().filter(|f| f.odds > self.rarest_odds) {
                 self.rarest_odds = f.odds;
                 v.rarest = text.into();
                 v.rarest_fish = c.clone();
+                v.rarest_model = None; // the file's text no longer matches, so it is ignored at startup
                 new_rarest = true;
             }
         }
@@ -834,12 +855,24 @@ impl Engine<'_> {
         });
     }
 
+    fn save_rarest_model(&self, text: &str, model: Option<Arc<Vec<Tri>>>) {
+        if let Some(m) = model {
+            rarest_model::save(&rarest_model_file(&self.bot.catch_log), text, &m);
+        }
+    }
+
     /// ~400 ms later, with the XP popup: XP, log
     fn finish_catch(&mut self, text: &str, xp: Option<i64>, look: Option<CatchLook>) {
         let mut c = parse_catch(text);
-        if let (Some(look), Some(c)) = (look, &mut c) {
-            c.icon = look.icon.unwrap_or_default();
-            c.tint = look.tint;
+        let mut model = None;
+        if let Some(look) = look {
+            if !look.model.is_empty() {
+                model = Some(Arc::new(look.model));
+            }
+            if let Some(c) = &mut c {
+                c.icon = look.icon.unwrap_or_default();
+                c.tint = look.tint;
+            }
         }
         if let Some(c) = &mut c {
             c.xp = xp;
@@ -849,17 +882,22 @@ impl Engine<'_> {
             self.bot.macro_xp.fetch_add(xp.unwrap_or(0), SeqCst);
         }
         let (mut is_last, mut is_rarest) = (false, false);
-        {
+        let rarest_model = {
             let mut v = self.bot.view.lock().unwrap();
             if v.last_catch == text {
                 v.last_fish.clone_from(&c); // now with its XP and icon; a newer catch already replaced it otherwise
+                if model.is_some() {
+                    v.last_model.clone_from(&model);
+                }
                 is_last = true;
             }
             if v.rarest == text {
                 v.rarest_fish.clone_from(&c);
                 is_rarest = true;
             }
-        }
+            set_rarest_model(&mut v, text, &model)
+        };
+        self.save_rarest_model(text, rarest_model);
         if let Some(c) = c.as_ref().filter(|_| is_last || is_rarest) {
             self.bot.persist(|s| {
                 if is_last {
@@ -1053,9 +1091,14 @@ impl Engine<'_> {
             v.last_catch = cfg.last_catch;
             v.rarest_fish = restored(&cfg.rarest, cfg.rarest_icon, cfg.rarest_tint);
             v.rarest = cfg.rarest;
+            v.rarest_model = rarest_model::load(&rarest_model_file(&bot.catch_log), &v.rarest).map(Arc::new);
             self.rarest_odds = v.rarest_fish.as_ref().map_or(0, |f| f.odds);
         }
         let mut pending_catch: Option<(String, Instant, usize)> = None; // popup text, when it was seen, the popup
+        // A catch whose popup had no 3D model yet when it was read: the game fills it in a moment later, sometimes
+        // after the XP shows. Same tuple as pending_catch.
+        let mut pending_model: Option<(String, Instant, usize)> = None;
+        let mut next_model_try = Instant::now();
         let mut reel_missing = Sustained::default();
         let mut warned = false;
         while !stop.load(Relaxed) {
@@ -1105,9 +1148,12 @@ impl Engine<'_> {
                     bot.view.lock().unwrap().level = level_pieces(lv.level, lv.xp);
                 }
                 if let Some((text, popup)) = r.take_catch_popup().filter(|(t, _)| !is_item_popup(t)) {
-                    if let Some((t, _, prev)) = pending_catch.take() {
+                    if let Some((t, at, prev)) = pending_catch.take() {
                         let xp = r.catch_xp();
                         let look = r.catch_look(prev);
+                        if look.as_ref().is_some_and(|l| l.model.is_empty()) {
+                            pending_model = Some((t.clone(), at, prev));
+                        }
                         self.finish_catch(&t, xp, look);
                     }
                     self.count_catch(&text);
@@ -1149,10 +1195,37 @@ impl Engine<'_> {
                     None
                 };
                 if catch_settled(age, xp.is_some())
-                    && let Some((text, _, popup)) = pending_catch.take()
+                    && let Some((text, at, popup)) = pending_catch.take()
                 {
                     let look = reader.as_mut().and_then(|r| r.catch_look(popup));
+                    if look.as_ref().is_some_and(|l| l.model.is_empty()) {
+                        pending_model = Some((text.clone(), at, popup));
+                    }
                     self.finish_catch(&text, xp, look);
+                }
+            }
+            if let Some((text, at, popup)) = &pending_model
+                && !self.reeling
+                && now >= next_model_try
+            {
+                next_model_try = now + MS(200); // an empty popup costs ~60 reads; the model's meshes a few hundred once
+                let look = reader.as_mut().and_then(|r| r.catch_look(*popup));
+                match look {
+                    Some(l) if !l.model.is_empty() => {
+                        let model = Some(Arc::new(l.model));
+                        let mut v = self.bot.view.lock().unwrap();
+                        if v.last_catch == *text {
+                            v.last_model.clone_from(&model);
+                        }
+                        let rarest_model = set_rarest_model(&mut v, text, &model);
+                        drop(v);
+                        self.save_rarest_model(text, rarest_model);
+                        pending_model = None;
+                    }
+                    // popup gone, or no model after 4 s (some popups show only the flat icon)
+                    None => pending_model = None,
+                    Some(_) if now - *at > MS(4000) => pending_model = None,
+                    Some(_) => {}
                 }
             }
             let dt = now - prev_tick;
