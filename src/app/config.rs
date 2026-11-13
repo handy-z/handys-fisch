@@ -14,6 +14,11 @@ pub struct Settings {
     /// Kept across restarts: catch popup text of the last and the rarest catch.
     pub last_catch: String,
     pub rarest: String,
+    /// the game's icon and recolor (0xRRGGBB) of each, as read from its catch popup (empty / None: none)
+    pub last_icon: String,
+    pub last_tint: Option<u32>,
+    pub rarest_icon: String,
+    pub rarest_tint: Option<u32>,
 }
 
 impl Default for Settings {
@@ -24,6 +29,10 @@ impl Default for Settings {
             perfect_cast: true,
             last_catch: String::new(),
             rarest: String::new(),
+            last_icon: String::new(),
+            last_tint: None,
+            rarest_icon: String::new(),
+            rarest_tint: None,
         }
     }
 }
@@ -37,7 +46,20 @@ pub fn load_settings(file: &Path) -> Settings {
         perfect_cast: ini.get_bool("perfectCast", d.perfect_cast),
         last_catch: ini.get_str("lastCatch", &d.last_catch),
         rarest: ini.get_str("rarest", &d.rarest),
+        last_icon: ini.get_str("lastIcon", ""),
+        last_tint: get_tint(&ini, "lastTint"),
+        rarest_icon: ini.get_str("rarestIcon", ""),
+        rarest_tint: get_tint(&ini, "rarestTint"),
     }
+}
+
+/// A saved tint; -1 (or a missing key, as in a save from before tints were kept) is none.
+fn get_tint(ini: &Ini, key: &str) -> Option<u32> {
+    u32::try_from(ini.get_int(key, -1)).ok()
+}
+
+fn put_tint(ini: &Ini, key: &str, tint: Option<u32>) {
+    ini.put_int(key, tint.map_or(-1, |t| t as i32));
 }
 
 pub fn save_settings(file: &Path, s: &Settings) {
@@ -47,6 +69,10 @@ pub fn save_settings(file: &Path, s: &Settings) {
     ini.put_bool("perfectCast", s.perfect_cast);
     ini.put_str("lastCatch", &s.last_catch);
     ini.put_str("rarest", &s.rarest);
+    ini.put_str("lastIcon", &s.last_icon);
+    put_tint(&ini, "lastTint", s.last_tint);
+    ini.put_str("rarestIcon", &s.rarest_icon);
+    put_tint(&ini, "rarestTint", s.rarest_tint);
 }
 
 impl SaveSettings for Settings {
@@ -83,9 +109,22 @@ mod tests {
             last_catch: "You just caught a Stalactite at 10.5kg! (1/4)".into(),
             rod: "Rod Of The Depths".into(),
             perfect_cast: false,
+            last_icon: "rbxassetid://123".into(),
+            last_tint: Some(0xa60000),
+            rarest_icon: String::new(),
+            rarest_tint: None,
         };
         save_settings(&ini, &s);
         assert!(load_settings(&ini) == s);
+        // a save from before icons were kept still loads, with none
+        std::fs::write(
+            &ini,
+            "lastCatch=You just caught a Stalactite at 10.5kg! (1/4)
+",
+        )
+        .unwrap();
+        let old = load_settings(&ini);
+        assert!(old.last_icon.is_empty() && old.last_tint.is_none() && old.rarest_tint.is_none());
         assert!(load_settings(&dir.join("missing.ini")) == Settings::default());
         set_app_data_dir_for_tests(None);
         let _ = std::fs::remove_dir_all(dir);

@@ -29,8 +29,6 @@ pub struct Catch {
     pub icon: String,
     /// the color (0xRRGGBB) the game recolored the fish's 3D model to (model_tint); None when it didn't
     pub tint: Option<u32>,
-    /// icon and tint were read from the catch popup (else they are unknown, not absent)
-    pub looked: bool,
 }
 
 /// Roblox's Enum.Material.Neon: drawn glowing, far brighter than its color
@@ -62,16 +60,6 @@ pub fn model_tint(parts: &[(u32, f32, u16)]) -> Option<u32> {
         c = c.map(|x| x * 255 / top);
     }
     Some(c[0] << 16 | c[1] << 8 | c[2])
-}
-
-/// The color (0xRRGGBB, from the wiki) to recolor a catch's picture with, as the game recolors a mutated fish: the
-/// mutation word nearest the species ("Shiny Hexed Xiphactinus": Hexed), since the stacking attributes (Shiny,
-/// Sparkling) come first and are near-white. None for an unmutated catch or a mutation the wiki has no color for.
-pub fn mutation_tint(c: &Catch) -> Option<u32> {
-    let m = c.mutations.last()?;
-    let known = MUTATIONS.iter().find(|k| k.name == m)?;
-    // two-color mutations ("89daff ffffff"): the first
-    u32::from_str_radix(known.color.split(' ').next()?, 16).ok()
 }
 
 /// The number in "rbxassetid://123"; None for anything else (a 3D-model catch's empty icon, or junk read after a
@@ -723,16 +711,6 @@ mod tests {
             Some(0x940000)
         );
         assert_eq!(model_tint(&[(0xa3a2a5, 1.0, 256)]), None);
-    }
-
-    #[test]
-    fn catch_tint_is_the_mutation_nearest_the_species() {
-        let c = parse_catch("You just caught a Big Abyssal Floppy at 11.4kg! (1/29)").unwrap();
-        assert_eq!(mutation_tint(&c), Some(0x0c0fd4)); // "Big" is a size, not a mutation
-        let c = parse_catch("You just caught a Shiny Hexed Xiphactinus at 188.1kg! (1/8,913)").unwrap();
-        assert_eq!(mutation_tint(&c), Some(0xa60000));
-        let c = parse_catch("You just caught a Floppy at 11.4kg! (1/29)").unwrap();
-        assert_eq!(mutation_tint(&c), None);
     }
 
     #[test]

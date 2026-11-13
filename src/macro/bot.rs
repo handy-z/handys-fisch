@@ -223,6 +223,11 @@ fn joined(v: &[String]) -> String {
 const CATCH_HEADER: &str =
     "time,size,mutations,species,kg,odds,rarity,location,value,xp,resilience,progress_speed,popup";
 
+/// A catch saved with its popup text, icon and tint, as it was shown before the restart.
+fn restored(text: &str, icon: String, tint: Option<u32>) -> Option<Catch> {
+    parse_catch(text).map(|c| Catch { icon, tint, ..c })
+}
+
 fn catch_line(text: &str, c: &Option<Catch>) -> String {
     let field = |f: fn(&Catch) -> String| c.as_ref().map(f).unwrap_or_default();
     format!(
@@ -783,8 +788,10 @@ impl Engine<'_> {
         }
         bot.persist(|s| {
             s.last_catch = text.into();
+            (s.last_icon, s.last_tint) = (String::new(), None); // until finish_catch has read the popup
             if new_rarest {
                 s.rarest = text.into();
+                (s.rarest_icon, s.rarest_tint) = (String::new(), None);
             }
         });
     }
@@ -795,7 +802,6 @@ impl Engine<'_> {
         if let (Some(look), Some(c)) = (look, &mut c) {
             c.icon = look.icon.unwrap_or_default();
             c.tint = look.tint;
-            c.looked = true;
         }
         if let Some(c) = &mut c {
             c.xp = xp;
@@ -804,14 +810,27 @@ impl Engine<'_> {
         if self.bot.on.load(SeqCst) {
             self.bot.macro_xp.fetch_add(xp.unwrap_or(0), SeqCst);
         }
+        let (mut is_last, mut is_rarest) = (false, false);
         {
             let mut v = self.bot.view.lock().unwrap();
             if v.last_catch == text {
                 v.last_fish.clone_from(&c); // now with its XP and icon; a newer catch already replaced it otherwise
+                is_last = true;
             }
             if v.rarest == text {
                 v.rarest_fish.clone_from(&c);
+                is_rarest = true;
             }
+        }
+        if let Some(c) = c.as_ref().filter(|_| is_last || is_rarest) {
+            self.bot.persist(|s| {
+                if is_last {
+                    (s.last_icon, s.last_tint) = (c.icon.clone(), c.tint);
+                }
+                if is_rarest {
+                    (s.rarest_icon, s.rarest_tint) = (c.icon.clone(), c.tint);
+                }
+            });
         }
         let log = self.bot.catch_log.clone();
         self.append_log(&log, CATCH_HEADER, catch_line(text, &c));
@@ -989,9 +1008,9 @@ impl Engine<'_> {
             // the last and the all-time rarest catch, saved by count_catch
             let cfg = bot.settings.get();
             let mut v = bot.view.lock().unwrap();
-            v.last_fish = parse_catch(&cfg.last_catch);
+            v.last_fish = restored(&cfg.last_catch, cfg.last_icon, cfg.last_tint);
             v.last_catch = cfg.last_catch;
-            v.rarest_fish = parse_catch(&cfg.rarest);
+            v.rarest_fish = restored(&cfg.rarest, cfg.rarest_icon, cfg.rarest_tint);
             v.rarest = cfg.rarest;
             self.rarest_odds = v.rarest_fish.as_ref().map_or(0, |f| f.odds);
         }
@@ -1191,6 +1210,18 @@ mod tests {
     use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE};
     use windows::Win32::Storage::FileSystem::{CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, OPEN_EXISTING};
     use windows::core::PCWSTR;
+
+    #[test]
+    fn bot_restored_catch_keeps_icon_and_tint() {
+        let c = restored(
+            "You just caught a Stalactite at 10.5kg! (1/4)",
+            "rbxassetid://7".into(),
+            Some(0x112233),
+        )
+        .unwrap();
+        assert!(c.icon == "rbxassetid://7" && c.tint == Some(0x112233) && c.species == "Stalactite");
+        assert!(restored("junk", String::new(), None).is_none());
+    }
 
     #[test]
     fn bot_shake_asks_for_focus_before_each_key() {

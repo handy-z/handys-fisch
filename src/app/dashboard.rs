@@ -22,7 +22,7 @@ use super::view::{
     bestiary_color, catch_spans, coin_spans, earned_spans, gps_text, hms, lifetime_spans, overlay_text, per_hour,
     save_warning, spans, styled, xp_spans,
 };
-use crate::game::catch::{Catch, LABEL_STROKE, mutation_tint, rod_pieces, rod_stat_pieces, rod_stats};
+use crate::game::catch::{Catch, LABEL_STROKE, rod_pieces, rod_stat_pieces, rod_stats};
 use crate::r#macro::bot::{Bot, release_inputs};
 use handy_sdk::roblox::http::win_http_get_bytes;
 
@@ -274,25 +274,9 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
         }
         ui.set_spans(ID_LAST, &catch_spans(&v.last_fish, &v.last_catch));
         ui.set_spans(ID_RAREST, &catch_spans(&v.rarest_fish, &v.rarest));
-        // the game's own icon when the catch popup had one and it has downloaded, else the wiki's picture
-        let picture = |f: &Option<Catch>| {
-            let Some(f) = f else { return PathBuf::new() };
-            let game = if f.icon.is_empty() {
-                PathBuf::new()
-            } else {
-                pictures.get(&f.icon)
-            };
-            if game.as_os_str().is_empty() {
-                pictures.get(&f.species)
-            } else {
-                game
-            }
-        };
-        // the game's own recolor when the popup was read, else the mutation's wiki color (a catch restored at startup)
-        let tint = |f: &Option<Catch>| {
-            f.as_ref()
-                .and_then(|f| if f.looked { f.tint } else { mutation_tint(f) })
-        };
+        // only the game's own icon (and its recolor); a fish the game shows as a 3D model has no picture
+        let picture = |f: &Option<Catch>| f.as_ref().map_or_else(PathBuf::new, |f| pictures.get(&f.icon));
+        let tint = |f: &Option<Catch>| f.as_ref().and_then(|f| f.tint);
         for (id, fish) in [(ID_LAST, &v.last_fish), (ID_RAREST, &v.rarest_fish)] {
             ui.set_picture(id, &picture(fish), tint(fish));
         }
