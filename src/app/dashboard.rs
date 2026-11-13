@@ -23,7 +23,7 @@ use super::view::{
     bestiary_color, catch_spans, coin_spans, earned_spans, gps_text, hms, lifetime_spans, overlay_text, per_hour,
     save_warning, spans, styled, xp_spans,
 };
-use crate::game::catch::{Catch, LABEL_STROKE, mutation_tint, rod_pieces, rod_stats};
+use crate::game::catch::{Catch, LABEL_STROKE, mutation_tint, rod_pieces, rod_stat_pieces, rod_stats};
 use crate::r#macro::bot::{Bot, release_inputs};
 use handy_sdk::roblox::http::win_http_get_bytes;
 
@@ -56,6 +56,7 @@ const ID_BESTIARY: i32 = 15;
 const ID_LIFETIME: i32 = 16;
 const ID_PERFECT: i32 = 17;
 const ID_LAST_CAST: i32 = 18;
+const ID_ROD_CARD: i32 = 19;
 
 /// Shows the dashboard and the "auto fish: on/off" overlay until the window is closed. The first close lets the bot
 /// finish the fish (up to 3 min); a second close is immediate. UI thread only, one at a time.
@@ -99,9 +100,11 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             tile(ID_RAREST, "Rarest").picture(90).lines(3),
             page("Player"),
             section("Gear"),
-            // name + stats two to a line (Rod Of The Depths' 9 take 6 lines); room for a few long ones
-            rich_value(ID_ROD, "Rod").lines(8),
-            rich_value(ID_BAIT, "Bait"),
+            // the wiki's pictures over the names, like the Fish cards
+            tile(ID_ROD_CARD, "Rod").picture(70).lines(2),
+            tile(ID_BAIT, "Bait").picture(70).lines(2),
+            // two to a line (Rod Of The Depths' 9 take 6 lines); room for a long one more
+            rich_value(ID_ROD, "Stats").lines(7),
             section("Progress"),
             tile(ID_COINS, "Coins"),
             tile(ID_LEVEL, "Level"),
@@ -167,26 +170,39 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
         ui.set_text(ID_ON, &format!("Auto fish\tpress [{}]", vk_name(st.toggle_vk)));
         let pl = &v.player;
         let rod = if pl.rod_label.is_empty() { &v.rod } else { &pl.rod_label }; // "[Momentum] Carrot Rod"
+        let rod_name = if pl.rod.is_empty() { &v.rod } else { &pl.rod }; // no enchant: the wiki page's title
         if rod.is_empty() {
-            ui.set_text(ID_ROD, "none equipped");
+            ui.set_text(ID_ROD_CARD, "none");
+            ui.set_text(ID_ROD, "–");
         } else {
+            ui.set_spans(ID_ROD_CARD, &spans(&rod_pieces(rod, !v.rod.is_empty())));
             // the game's own stat lines; the wiki's base stats until the equipment panel has the rod
             let stats = if pl.rod_stats.is_empty() {
-                rod_stats(if pl.rod.is_empty() { &v.rod } else { &pl.rod })
+                rod_stats(rod_name)
             } else {
                 pl.rod_stats.clone()
             };
-            ui.set_spans(ID_ROD, &spans(&rod_pieces(rod, !v.rod.is_empty(), &stats)));
+            ui.set_spans(ID_ROD, &spans(&rod_stat_pieces(&stats)));
         }
-        // the shop's bold name
+        // the shop's bold name; the game says "None" with no bait on
+        let bait = if pl.bait == "None" { "" } else { pl.bait.as_str() };
         ui.set_spans(
             ID_BAIT,
-            &if pl.bait.is_empty() {
-                styled("–", "", false, "")
+            &if bait.is_empty() {
+                styled("none", "9a9a9a", false, "")
             } else {
-                styled(&pl.bait, "", true, "")
+                styled(bait, "", true, "")
             },
         );
+        // the wiki's pictures, as for fish; nothing (an empty path) while none or not downloaded yet
+        for (id, name) in [(ID_ROD_CARD, rod_name.as_str()), (ID_BAIT, bait)] {
+            let file = if name.is_empty() {
+                PathBuf::new()
+            } else {
+                pictures.get(name)
+            };
+            ui.set_picture(id, &file, None);
+        }
         let zone = if pl.zone.is_empty() { "?" } else { &pl.zone };
         let world = if pl.world.is_empty() {
             String::new()

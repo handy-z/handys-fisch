@@ -476,9 +476,8 @@ fn find_enchant(enchant: &str) -> Option<&'static EnchantInfo> {
 
 /// A rod as the game's equipment panel shows it, from the label "[Momentum] Carrot Rod": "★ Momentum ★ " bold
 /// in the enchant's color and the wiki's outline for it (else LABEL_STROKE), "Carrot Rod" bold and outlined,
-/// " (not equipped)" plain; then each stat line on its own line,
-/// bold #afafaf with a bonus "(+28%)" in #ffd43a ("Lure Speed: 85% <font color="#ffd43a">(+28%)</font>").
-pub fn rod_pieces(label: &str, equipped: bool, stats: &[String]) -> Vec<Piece> {
+/// then a muted "equipped" / "not equipped" second line (the dashboard's Rod card).
+pub fn rod_pieces(label: &str, equipped: bool) -> Vec<Piece> {
     let mut out = Vec::new();
     let mut rod = label;
     if label.starts_with('[') {
@@ -498,15 +497,23 @@ pub fn rod_pieces(label: &str, equipped: bool, stats: &[String]) -> Vec<Piece> {
         }
     }
     out.push(piece(rod, "", true, false, LABEL_STROKE));
-    if !equipped {
-        out.push(piece(" (not equipped)", "", false, false, ""));
-    }
-    // two to a line in the game's order (the dashboard's tab stop is the second column); a long one gets its own line
+    let state = if equipped { "\nequipped" } else { "\nnot equipped" };
+    out.push(piece(state, "9a9a9a", false, false, ""));
+    out
+}
+
+/// The rod's stat lines as the equipment panel lists them, two to a line in its order (the dashboard's tab stop is
+/// the second column), a long one on its own line: muted name, bright value, a bonus "(+28%)" in #ffd43a
+/// ("Lure Speed: 85% <font color="#ffd43a">(+28%)</font>").
+pub fn rod_stat_pieces(stats: &[String]) -> Vec<Piece> {
     const WIDE: usize = 24;
+    let mut out = Vec::new();
     let mut second = false; // the next short stat goes in the second column
-    for s in stats {
+    for (i, s) in stats.iter().enumerate() {
         let wide = s.chars().count() > WIDE;
-        out.push(piece(if second && !wide { "\t" } else { "\n" }, "", false, false, ""));
+        if i > 0 {
+            out.push(piece(if second && !wide { "\t" } else { "\n" }, "", false, false, ""));
+        }
         second = !wide && !second;
         let bonus = if s.ends_with(')') { s.rfind(" (") } else { None };
         let main = &s[..bonus.map_or(s.len(), |b| b + 1)];
@@ -816,30 +823,32 @@ mod tests {
     #[test]
     fn catch_rod_pieces_like_the_equipment_panel() {
         // the panel's lines for a Momentum Carrot Rod, read live
-        let p = rod_pieces(
-            "[Momentum] Carrot Rod",
-            true,
-            &strs(&["Lure Speed: 85% (+28%)", "Luck: 125%", "Caught: 737"]),
-        );
-        assert_eq!(
-            plain(&p),
-            "★ Momentum ★ Carrot Rod\nLure Speed: 85% (+28%)\tLuck: 125%\nCaught: 737"
-        );
-        assert!(p.len() >= 5);
+        let p = rod_pieces("[Momentum] Carrot Rod", true);
+        assert_eq!(plain(&p), "★ Momentum ★ Carrot Rod\nequipped");
         assert_eq!(p[0], piece("★ Momentum ★ ", "d3b380", true, false, LABEL_STROKE)); // no outline on the wiki
         assert_eq!(p[1], piece("Carrot Rod", "", true, false, LABEL_STROKE));
+        assert_eq!(plain(&rod_pieces("Carrot Rod", false)), "Carrot Rod\nnot equipped");
+        let s = rod_stat_pieces(&strs(&["Lure Speed: 85% (+28%)", "Luck: 125%", "Caught: 737"]));
+        assert_eq!(plain(&s), "Lure Speed: 85% (+28%)\tLuck: 125%\nCaught: 737");
         assert!(
-            p[3] == piece("Lure Speed: ", "9a9a9a", false, false, "")
-                && p[4] == piece("85% ", "", true, false, "")
-                && p[5] == piece("(+28%)", "ffd43a", true, false, "")
+            s[0] == piece("Lure Speed: ", "9a9a9a", false, false, "")
+                && s[1] == piece("85% ", "", true, false, "")
+                && s[2] == piece("(+28%)", "ffd43a", true, false, "")
         );
+        // a long one sits alone; the next starts a fresh pair
+        let long = strs(&[
+            "Luck: 1%",
+            "Hunt Focus: Absolute Darkness (+20)",
+            "Caught: 2",
+            "Control: 0.1",
+        ]);
         assert_eq!(
-            plain(&rod_pieces("Carrot Rod", false, &[])),
-            "Carrot Rod (not equipped)"
+            plain(&rod_stat_pieces(&long)),
+            "Luck: 1%\nHunt Focus: Absolute Darkness (+20)\nCaught: 2\tControl: 0.1"
         );
         // the wiki outlines some enchants: Chaotic is near-black with a white edge
         assert_eq!(
-            rod_pieces("[Chaotic] Carrot Rod", true, &[])[0],
+            rod_pieces("[Chaotic] Carrot Rod", true)[0],
             piece("★ Chaotic ★ ", "141316", true, false, "ffffff")
         );
     }
