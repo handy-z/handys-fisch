@@ -409,13 +409,15 @@ pub fn catch_pieces(c: &Catch) -> Vec<Piece> {
 /// empty if unknown.
 pub fn rod_stats(rod: &str) -> Vec<String> {
     RODS.iter().find(|r| r.name == rod).map_or_else(Vec::new, |r| {
-        let kg = if r.max_weight == "∞" { "" } else { "kg" };
+        // the wiki writes some unlimited rods' max as 1e+15 (Tryhard Rod)
+        let max = if r.max_weight == "1e+15" { "∞" } else { r.max_weight };
+        let kg = if max == "∞" { "" } else { "kg" };
         vec![
             format!("Lure Speed: {}%", r.lure),
             format!("Luck: {}%", r.luck),
             format!("Control: {}", r.control),
             format!("Resilience: {}%", r.resilience),
-            format!("Max KG: {}{kg}", r.max_weight),
+            format!("Max KG: {max}{kg}"),
         ]
     })
 }
@@ -462,27 +464,48 @@ fn find_enchant(enchant: &str) -> Option<&'static EnchantInfo> {
     ENCHANTS.iter().find(|e| e.name == key)
 }
 
-/// A rod as the game's equipment panel shows it, from the label "[Momentum] Carrot Rod": "★ Momentum ★ " bold
-/// in the enchant's color and the wiki's outline for it (else LABEL_STROKE), "Carrot Rod" bold and outlined,
-/// then a muted "equipped" / "not equipped" second line (the dashboard's Rod card).
+/// A rod's enchants, from the hotbar's words before the rod name ("Herculean Cryogenic"): a rod holds a primary
+/// enchant and a secondary (Cosmic) one, and some names are two words ("Glimmering Crown"), so the longest known
+/// name wins at each word; an unknown word stands alone.
+fn split_enchants(text: &str) -> Vec<String> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        let n = (1..=3.min(words.len() - i))
+            .rev()
+            .find(|&n| find_enchant(&words[i..i + n].join(" ")).is_some())
+            .unwrap_or(1);
+        out.push(words[i..i + n].join(" "));
+        i += n;
+    }
+    out
+}
+
+/// A rod as the game's equipment panel shows it, from the label "[Herculean Cryogenic] Tryhard Rod": a line of
+/// "★ Herculean ★" per enchant, bold in its color and the wiki's outline for it (else LABEL_STROKE), then "Tryhard
+/// Rod" bold and outlined, then a muted "equipped" / "not equipped" line (the dashboard's Rod card).
 pub fn rod_pieces(label: &str, equipped: bool) -> Vec<Piece> {
     let mut out = Vec::new();
     let mut rod = label;
-    if label.starts_with('[') {
-        // "[Momentum] Carrot Rod": the panel shows "★ Momentum ★" over the rod
-        if let Some(close) = label.find("] ") {
-            let enchant = &label[1..close];
+    if label.starts_with('[')
+        && let Some(close) = label.find("] ")
+    {
+        // the enchants go on their own line: with the rod name they don't fit a card
+        for (i, enchant) in split_enchants(&label[1..close]).iter().enumerate() {
             let e = find_enchant(enchant);
             let stroke = e.map(|e| e.stroke).filter(|s| !s.is_empty()).unwrap_or(LABEL_STROKE);
+            let gap = if i == 0 { "" } else { " " };
             out.push(piece(
-                format!("★ {enchant} ★ "),
+                format!("{gap}★ {enchant} ★"),
                 e.map_or("", |e| e.color),
                 true,
                 false,
                 stroke,
             ));
-            rod = &label[close + 2..];
         }
+        out.push(piece("\n", "", false, false, ""));
+        rod = &label[close + 2..];
     }
     out.push(piece(rod, "", true, false, LABEL_STROKE));
     let state = if equipped { "\nequipped" } else { "\nnot equipped" };
@@ -753,6 +776,7 @@ mod tests {
             ]
         );
         assert_eq!(rod_stats("Kings Rod")[4], "Max KG: ∞");
+        assert_eq!(rod_stats("Tryhard Rod")[4], "Max KG: ∞"); // the wiki writes 1e+15
         assert!(rod_stats("Not A Rod").is_empty());
     }
 
@@ -802,9 +826,19 @@ mod tests {
     fn catch_rod_pieces_like_the_equipment_panel() {
         // the panel's lines for a Momentum Carrot Rod, read live
         let p = rod_pieces("[Momentum] Carrot Rod", true);
-        assert_eq!(plain(&p), "★ Momentum ★ Carrot Rod\nequipped");
-        assert_eq!(p[0], piece("★ Momentum ★ ", "d3b380", true, false, LABEL_STROKE)); // no outline on the wiki
-        assert_eq!(p[1], piece("Carrot Rod", "", true, false, LABEL_STROKE));
+        assert_eq!(plain(&p), "★ Momentum ★\nCarrot Rod\nequipped");
+        assert_eq!(p[0], piece("★ Momentum ★", "d3b380", true, false, LABEL_STROKE)); // no outline on the wiki
+        assert_eq!(p[2], piece("Carrot Rod", "", true, false, LABEL_STROKE));
+        // a primary and a secondary (Cosmic) enchant, each in its own color, as the hotbar shows them
+        let two = rod_pieces("[Herculean Cryogenic] Tryhard Rod", false);
+        assert_eq!(plain(&two), "★ Herculean ★ ★ Cryogenic ★\nTryhard Rod\nnot equipped");
+        assert!(two[0].color == "ffea00" && two[1].color == "94ebff");
+        // a two-word name stays whole; an unknown word stands alone
+        assert_eq!(
+            split_enchants("Glimmering Crown Cryogenic"),
+            ["Glimmering Crown", "Cryogenic"]
+        );
+        assert_eq!(split_enchants("Weird Abyssal"), ["Weird", "Abyssal"]);
         assert_eq!(plain(&rod_pieces("Carrot Rod", false)), "Carrot Rod\nnot equipped");
         let s = rod_stat_pieces(&strs(&["Lure Speed: 85% (+28%)", "Luck: 125%", "Caught: 737"]));
         assert_eq!(plain(&s), "Lure Speed: 85% (+28%)\tLuck: 125%\nCaught: 737");
@@ -827,7 +861,7 @@ mod tests {
         // the wiki outlines some enchants: Chaotic is near-black with a white edge
         assert_eq!(
             rod_pieces("[Chaotic] Carrot Rod", true)[0],
-            piece("★ Chaotic ★ ", "141316", true, false, "ffffff")
+            piece("★ Chaotic ★", "141316", true, false, "ffffff")
         );
     }
 }
