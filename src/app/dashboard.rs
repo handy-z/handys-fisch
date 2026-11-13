@@ -96,8 +96,9 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             rich_value(ID_XP, "XP gained"),
             section("Fish"), // kept across restarts
             // name, then kg · odds · value, in the game's colors and font; the fish's picture
-            rich_value(ID_LAST, "Last catch").lines(2).picture(80),
-            rich_value(ID_RAREST, "Rarest").lines(2).picture(80),
+            // the model fits the slot's smaller side, so height (lines) is what makes it bigger; ~100 wide is enough
+            rich_value(ID_LAST, "Last catch").lines(4).picture(100),
+            rich_value(ID_RAREST, "Rarest").lines(4).picture(100),
             page("Player"),
             section("Gear"),
             rich_value(ID_ROD, "Rod").lines(11), // name + up to 10 stat lines (Rod Of The Depths has 9)
@@ -278,16 +279,23 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             f.as_ref()
                 .and_then(|f| if f.looked { f.tint } else { mutation_tint(f) })
         };
-        match (&v.last_model, ui.picture_size(ID_LAST)) {
-            (Some(model), Some((w, h))) if w > 0 && h > 0 => {
-                let yaw = started.elapsed().as_secs_f32() * 0.8; // radians: one slow turn about every 8 s
-                ui.set_picture_pixels(ID_LAST, w, h, &render(model, w, h, yaw));
+        let yaw = started.elapsed().as_secs_f32() * 0.8; // radians: one slow turn about every 8 s
+        for (id, model, fish) in [
+            (ID_LAST, &v.last_model, &v.last_fish),
+            (ID_RAREST, &v.rarest_model, &v.rarest_fish),
+        ] {
+            if !ui.picture_visible(id) {
+                continue; // hidden: rendering would only burn CPU; the next visible tick catches up
             }
-            _ => {
-                ui.set_picture(ID_LAST, &picture(&v.last_fish), tint(&v.last_fish));
+            match (model, ui.picture_size(id)) {
+                (Some(model), Some((w, h))) if w > 0 && h > 0 => {
+                    ui.set_picture_pixels(id, w, h, &render(model, w, h, yaw));
+                }
+                _ => {
+                    ui.set_picture(id, &picture(fish), tint(fish));
+                }
             }
         }
-        ui.set_picture(ID_RAREST, &picture(&v.rarest_fish), tint(&v.rarest_fish));
         ui.set_spans(ID_COINS, &coin_spans(&v.coins));
         ui.set_spans(
             ID_LEVEL,

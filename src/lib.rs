@@ -15,5 +15,6 @@ pub mod game {
 }
 pub mod r#macro {
     pub mod bot;
+    pub mod rarest_model;
     pub mod slash_hold;
 }

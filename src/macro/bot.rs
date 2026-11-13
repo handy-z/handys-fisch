@@ -21,6 +21,7 @@ use crate::game::catch::{Catch, Piece, is_item_popup, kg_text, level_pieces, par
 use crate::game::reader::{
     CatchLook, FishState, GameReader, PlayerInfo, ROD_IDLE, ROD_LURE, ROD_REELING, line_out, reel_state,
 };
+use crate::r#macro::rarest_model;
 
 const MS: fn(u64) -> Duration = Duration::from_millis;
 
@@ -478,6 +479,8 @@ pub struct View {
     /// last_fish's 3D model from its popup, when it could be read; not persisted
     pub last_model: Option<Arc<Vec<Tri>>>,
     pub rarest_fish: Option<Catch>,
+    /// rarest_fish's 3D model; saved next to the catch log (rarest_model.bin) so it survives a restart
+    pub rarest_model: Option<Arc<Vec<Tri>>>,
     pub player: PlayerInfo,
     /// studs/s between the last two position reads (the GPS's "s/s")
     pub speed: Option<f32>,
@@ -485,6 +488,19 @@ pub struct View {
     pub stopped: String,
     /// the bot's last cast: power bar when it let go, then the game's rating ("97% · PERFECT!")
     pub last_cast: String,
+}
+
+fn rarest_model_file(catch_log: &Path) -> PathBuf {
+    catch_log.with_file_name("rarest_model.bin")
+}
+
+/// Gives the rarest catch its model when `text` is that catch; the model to save then, else None.
+fn set_rarest_model(v: &mut View, text: &str, model: &Option<Arc<Vec<Tri>>>) -> Option<Arc<Vec<Tri>>> {
+    if v.rarest != text || model.is_none() {
+        return None;
+    }
+    v.rarest_model.clone_from(model);
+    model.clone()
 }
 
 /// Cast -> shake -> reel loop. Input is sent only while Roblox is the foreground window.
@@ -790,6 +806,7 @@ impl Engine<'_> {
                 self.rarest_odds = f.odds;
                 v.rarest = text.into();
                 v.rarest_fish = c.clone();
+                v.rarest_model = None; // the file's text no longer matches, so it is ignored at startup
                 new_rarest = true;
             }
         }
@@ -799,6 +816,12 @@ impl Engine<'_> {
                 s.rarest = text.into();
             }
         });
+    }
+
+    fn save_rarest_model(&self, text: &str, model: Option<Arc<Vec<Tri>>>) {
+        if let Some(m) = model {
+            rarest_model::save(&rarest_model_file(&self.bot.catch_log), text, &m);
+        }
     }
 
     /// ~400 ms later, with the XP popup: XP, log
@@ -822,18 +845,20 @@ impl Engine<'_> {
         if self.bot.on.load(SeqCst) {
             self.bot.macro_xp.fetch_add(xp.unwrap_or(0), SeqCst);
         }
-        {
+        let rarest_model = {
             let mut v = self.bot.view.lock().unwrap();
             if v.last_catch == text {
                 v.last_fish.clone_from(&c); // now with its XP and icon; a newer catch already replaced it otherwise
                 if model.is_some() {
-                    v.last_model = model;
+                    v.last_model.clone_from(&model);
                 }
             }
             if v.rarest == text {
                 v.rarest_fish.clone_from(&c);
             }
-        }
+            set_rarest_model(&mut v, text, &model)
+        };
+        self.save_rarest_model(text, rarest_model);
         let log = self.bot.catch_log.clone();
         self.append_log(&log, CATCH_HEADER, catch_line(text, &c));
     }
@@ -1014,6 +1039,7 @@ impl Engine<'_> {
             v.last_catch = cfg.last_catch;
             v.rarest_fish = parse_catch(&cfg.rarest);
             v.rarest = cfg.rarest;
+            v.rarest_model = rarest_model::load(&rarest_model_file(&bot.catch_log), &v.rarest).map(Arc::new);
             self.rarest_odds = v.rarest_fish.as_ref().map_or(0, |f| f.odds);
         }
         let mut pending_catch: Option<(String, Instant, usize)> = None; // popup text, when it was seen, the popup
@@ -1128,11 +1154,14 @@ impl Engine<'_> {
                 let look = reader.as_mut().and_then(|r| r.catch_look(*popup));
                 match look {
                     Some(l) if !l.model.is_empty() => {
+                        let model = Some(Arc::new(l.model));
                         let mut v = self.bot.view.lock().unwrap();
                         if v.last_catch == *text {
-                            v.last_model = Some(Arc::new(l.model));
+                            v.last_model.clone_from(&model);
                         }
+                        let rarest_model = set_rarest_model(&mut v, text, &model);
                         drop(v);
+                        self.save_rarest_model(text, rarest_model);
                         pending_model = None;
                     }
                     // popup gone, or no model after 4 s (some popups show only the flat icon)
