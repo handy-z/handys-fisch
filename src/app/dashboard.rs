@@ -100,9 +100,9 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             tile(ID_RAREST, "Rarest").picture(90).lines(3),
             page("Player"),
             section("Gear"),
-            // the wiki's pictures over the names, like the Fish cards
-            tile(ID_ROD_CARD, "Rod").picture(70).lines(2),
-            tile(ID_BAIT, "Bait").picture(70).lines(2),
+            // the wiki's pictures over the names, like the Fish cards; tall, as rod pictures are (192×362)
+            tile(ID_ROD_CARD, "Rod").picture(130).lines(2),
+            tile(ID_BAIT, "Bait").picture(130).lines(2),
             // two to a line (Rod Of The Depths' 9 take 6 lines); room for a long one more
             rich_value(ID_ROD, "Stats").lines(7),
             section("Progress"),
