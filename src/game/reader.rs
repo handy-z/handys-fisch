@@ -1,202 +1,21 @@
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use handy_sdk::app::updater_thread::Session;
 use handy_sdk::roblox::instance::{child_by_class, child_by_name, children, data_model, instance_class, instance_name};
 use handy_sdk::roblox::memory::Memory;
-use handy_sdk::roblox::mesh::{Mesh, cached_meshes, part_frame, part_mesh_id};
 use handy_sdk::roblox::read::{
     CachedPath, VisibleProbe, character_of, gui_image, gui_layout_order, gui_size, gui_text, int_value, local_player,
     number_value, object_value, parent_of, part_position, player_gui, string_value,
 };
 
-use handy_sdk::ui::raster::Tri;
-
-use super::catch::{NEON, asset_id, model_tint, parse_xp};
+use super::catch::{asset_id, model_tint, parse_xp};
 
 /// How a catch popup shows the catch; see GameReader::catch_look.
 #[derive(Debug, Default)]
 pub struct CatchLook {
     pub icon: Option<String>,
     pub tint: Option<u32>,
-    /// the popup's 3D model in world space; empty when the mesh offsets are missing or nothing could be read
-    pub model: Vec<Tri>,
-}
-
-/// A unit cube, for plain Parts.
-static BLOCK: LazyLock<Mesh> = LazyLock::new(|| Mesh {
-    positions: (0..8)
-        .map(|i| [0, 1, 2].map(|k| if i >> k & 1 == 1 { 0.5 } else { -0.5 }))
-        .collect(),
-    tris: [
-        [0, 1, 3],
-        [0, 3, 2],
-        [4, 6, 7],
-        [4, 7, 5],
-        [0, 4, 5],
-        [0, 5, 1],
-        [2, 3, 7],
-        [2, 7, 6],
-        [0, 2, 6],
-        [0, 6, 4],
-        [1, 5, 7],
-        [1, 7, 3],
-    ]
-    .to_vec(),
-    normals: Vec::new(),
-});
-
-/// A unit-diameter UV sphere with smooth normals, for Ball Parts.
-static BALL: LazyLock<Mesh> = LazyLock::new(|| {
-    const LON: u32 = 12;
-    const LAT: u32 = 8;
-    let mut positions = Vec::new();
-    for i in 0..=LAT {
-        let (s, c) = (std::f32::consts::PI * i as f32 / LAT as f32).sin_cos();
-        for j in 0..LON {
-            let (sj, cj) = (std::f32::consts::TAU * j as f32 / LON as f32).sin_cos();
-            positions.push([s * cj / 2.0, c / 2.0, s * sj / 2.0]);
-        }
-    }
-    let at = |i: u32, j: u32| i * LON + j % LON;
-    let tris = (0..LAT)
-        .flat_map(|i| {
-            (0..LON).flat_map(move |j| {
-                [
-                    [at(i, j), at(i + 1, j), at(i + 1, j + 1)],
-                    [at(i, j), at(i + 1, j + 1), at(i, j + 1)],
-                ]
-            })
-        })
-        .collect();
-    let normals = positions.iter().map(|v| v.map(|c| c * 2.0)).collect();
-    Mesh {
-        positions,
-        normals,
-        tris,
-    }
-});
-
-/// A unit cylinder along X (as Roblox's run), smooth sides and flat caps, for Cylinder Parts.
-static CYLINDER: LazyLock<Mesh> = LazyLock::new(|| {
-    const SEG: u32 = 16;
-    let (mut positions, mut normals, mut tris) = (Vec::new(), Vec::new(), Vec::new());
-    // two rings with radial normals for the side, then the same two again facing along X for the caps
-    for cap in [false, true] {
-        for x in [-0.5f32, 0.5] {
-            for j in 0..SEG {
-                let (s, c) = (std::f32::consts::TAU * j as f32 / SEG as f32).sin_cos();
-                positions.push([x, c / 2.0, s / 2.0]);
-                normals.push(if cap { [x * 2.0, 0.0, 0.0] } else { [0.0, c, s] });
-            }
-        }
-    }
-    for j in 0..SEG {
-        let k = (j + 1) % SEG;
-        tris.push([j, SEG + j, SEG + k]);
-        tris.push([j, SEG + k, k]);
-    }
-    for cap in [2 * SEG, 3 * SEG] {
-        for j in 1..SEG - 1 {
-            tris.push([cap, cap + j, cap + j + 1]); // a fan: the cap is convex
-        }
-    }
-    Mesh {
-        positions,
-        normals,
-        tris,
-    }
-});
-
-/// Roblox's WedgePart in a unit box: full bottom, tall face at the back (+Z), the slope falling from the top-back edge
-/// to the bottom-front (-Z, the LookVector side) edge.
-static WEDGE: LazyLock<Mesh> = LazyLock::new(|| Mesh {
-    positions: vec![
-        [-0.5, -0.5, -0.5],
-        [0.5, -0.5, -0.5],
-        [-0.5, -0.5, 0.5],
-        [0.5, -0.5, 0.5],
-        [-0.5, 0.5, 0.5],
-        [0.5, 0.5, 0.5],
-    ],
-    normals: Vec::new(),
-    tris: vec![
-        [0, 1, 3],
-        [0, 3, 2], // bottom
-        [2, 3, 5],
-        [2, 5, 4], // back
-        [0, 1, 5],
-        [0, 5, 4], // slope
-        [0, 2, 4], // left
-        [1, 3, 5], // right
-    ],
-});
-
-/// A plain Part's unit mesh and the size to fit it to, by its Enum.PartType (0 Ball, 1 Block, 2 Cylinder, 3 Wedge,
-/// 4 CornerWedge): balls are spheres of the smallest side, cylinders run along X as wide as the smaller of Y and Z.
-fn shape_mesh(shape: u8, size: [f32; 3]) -> (&'static Mesh, [f32; 3]) {
-    let d = size[1].min(size[2]);
-    match shape {
-        0 => (&BALL, [d.min(size[0]); 3]),
-        2 => (&CYLINDER, [size[0], d, d]),
-        3 => (&WEDGE, size),
-        _ => (&BLOCK, size), // shortcut: CornerWedge drawn as a block; give it its own mesh if one shows up big
-    }
-}
-
-/// A part's mesh in world space: fitted to the part's size per axis around its bounding-box center (meshes come in
-/// their own units, centered on the part's CFrame), then turned and moved by the part's rotation and position.
-fn part_tris(
-    mesh: &Mesh,
-    union: bool,
-    rot: &[f32; 9],
-    pos: [f32; 3],
-    size: [f32; 3],
-    rgb: u32,
-    glow: bool,
-) -> Vec<Tri> {
-    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
-    for v in &mesh.positions {
-        for k in 0..3 {
-            lo[k] = lo[k].min(v[k]);
-            hi[k] = hi[k].max(v[k]);
-        }
-    }
-    let scale: [f32; 3] = std::array::from_fn(|k| {
-        let extent = hi[k] - lo[k];
-        if extent > 1e-6 { size[k] / extent } else { 1.0 } // flat on that axis: nothing to fit
-    });
-    // a MeshPart mesh is centered on its part; a union's sits around the part's own origin, often off its center
-    // (seen live: the Piranha's pieces)
-    let origin: [f32; 3] = std::array::from_fn(|k| if union { 0.0 } else { (lo[k] + hi[k]) / 2.0 });
-    // world = R * local with R row-major; not verified live: if parts come out mis-rotated use rot[r + 3 * k]
-    let turn = |l: [f32; 3]| -> [f32; 3] { std::array::from_fn(|r| (0..3).map(|k| rot[3 * r + k] * l[k]).sum()) };
-    let world = |v: [f32; 3]| -> [f32; 3] {
-        let w = turn(std::array::from_fn(|k| (v[k] - origin[k]) * scale[k]));
-        std::array::from_fn(|r| w[r] + pos[r])
-    };
-    // normals take the inverse transpose of the scale: divided, not multiplied, per axis
-    let normal = |i: u32| -> [f32; 3] {
-        let Some(n) = mesh.normals.get(i as usize) else {
-            return [0.0; 3];
-        };
-        let w = turn(std::array::from_fn(|k| n[k] / scale[k]));
-        let len = w.iter().map(|c| c * c).sum::<f32>().sqrt();
-        let u = w.map(|c| c / len);
-        if u.iter().all(|c| c.is_finite()) { u } else { [0.0; 3] } // flat
-    };
-    let corner = |i: u32| mesh.positions.get(i as usize).map(|&v| world(v));
-    mesh.tris
-        .iter()
-        .filter_map(|t| {
-            Some(Tri {
-                p: [corner(t[0])?, corner(t[1])?, corner(t[2])?],
-                n: t.map(normal),
-                rgb,
-                glow,
-            })
-        })
-        .collect()
 }
 
 // Fisch rod values/state (IntValue), recorded by tools/debug/fish_record.py.
@@ -711,7 +530,7 @@ impl GameReader {
     /// How a catch popup from take_catch_popup shows the catch: its flat icon (catch/fih/icon, "rbxassetid://123"; None
     /// for fish shown as a 3D model, most of them) and the color the game recolored that model to (model_tint; None
     /// unless it marks it recolored with a "<mutation>template" part). None once the popup is gone. Set a moment after
-    /// the text: read it with the XP. Also the model's visible mesh parts as triangles (CatchLook::model).
+    /// the text: read it with the XP.
     pub fn catch_look(&mut self, popup: usize) -> Option<CatchLook> {
         if !self.resolve_player() {
             return None;
@@ -731,18 +550,15 @@ impl GameReader {
             .any(|&c| instance_name(p, o, c).is_some_and(|n| n.ends_with("template")));
         let m: &dyn Memory = p;
         let mut parts = Vec::new();
-        let mut meshes = Vec::new(); // (mesh id, rotation, position, size, rgb, glow)
-        let mut boxes = Vec::new();
         let mut solids = 0;
-        let mut stack = kids;
+        let mut stack = if recolored { kids } else { Vec::new() }; // only a recolored fish needs its parts read
         while let Some(c) = stack.pop() {
             if solids >= 64 {
-                break; // plenty to average and draw; a huge model stays cheap
+                break; // plenty to average; a huge model stays cheap
             }
             // every solid part kind: Piranha and Anomalocaris bodies are unions (PartOperation)
-            let class = instance_class(p, o, c);
             if matches!(
-                class.as_deref(),
+                instance_class(p, o, c).as_deref(),
                 Some("Part" | "MeshPart" | "PartOperation" | "UnionOperation" | "WedgePart" | "CornerWedgePart")
             ) {
                 let rgb = m.get::<[u8; 4]>(o.at(c, "BasePart.Color3")).unwrap_or_default();
@@ -755,50 +571,13 @@ impl GameReader {
                     m.get::<u16>(o.at(prim, "Primitive.Material")).unwrap_or(0)
                 };
                 solids += 1;
-                if recolored {
-                    parts.push((rgb, transparency, material));
-                }
-                // fully transparent parts (the Hitbox) aren't drawn by the game either
-                if transparency < 1.0
-                    && let Some(id) = part_mesh_id(m, o, c)
-                    && let Some((rot, pos, size)) = part_frame(m, o, c)
-                {
-                    meshes.push((id, rot, pos, size, rgb, material == NEON));
-                } else if transparency < 1.0
-                    && matches!(class.as_deref(), Some("Part" | "WedgePart"))
-                    && let Some((rot, pos, size)) = part_frame(m, o, c)
-                {
-                    // an optional key: without it every plain Part is a block
-                    let shape = if class.as_deref() == Some("WedgePart") {
-                        3
-                    } else if o.values.contains_key("BasePart.Shape") {
-                        m.get::<u8>(o.at(c, "BasePart.Shape")).unwrap_or(1)
-                    } else {
-                        1
-                    };
-                    let (mesh, size) = shape_mesh(shape, size);
-                    boxes.extend(part_tris(mesh, false, &rot, pos, size, rgb, material == NEON));
-                }
+                parts.push((rgb, transparency, material));
             }
             stack.extend(children(p, o, c));
-        }
-        let mut model = Vec::new();
-        if !meshes.is_empty() {
-            let ids: Vec<(u64, bool)> = meshes.iter().map(|x| x.0).collect();
-            let cache = cached_meshes(m, o, data_model(p, o), &ids);
-            for (id, rot, pos, size, rgb, glow) in &meshes {
-                if let Some(mesh) = cache.get(&id.0) {
-                    model.extend(part_tris(mesh, id.1, rot, *pos, *size, *rgb, *glow));
-                }
-            }
-        }
-        if !model.is_empty() {
-            model.extend(boxes); // the eyes of a fish whose body was read; alone they are no picture
         }
         Some(CatchLook {
             icon,
             tint: model_tint(&parts), // empty unless recolored
-            model,
         })
     }
 
@@ -984,102 +763,6 @@ mod tests {
         assert_eq!(hotbar_key_for(&rods(&["No-Life Rod"]), &nolife), Some(2));
         assert!(hotbar_key_for(&rods(&["Bloomspire"]), &slots(&[("Bloomspire: Twisted Toxins", "1")])).is_none());
         assert_eq!(enchanted_rod("No-Life Rod", &nolife), "No-Life Rod");
-    }
-
-    #[test]
-    fn reader_part_tris_fits_turns_and_moves_the_mesh() {
-        // off-center mesh 2 wide on each axis, part 4x2x2, turned 90 degrees about Y, at (10, 20, 30)
-        let mesh = Mesh {
-            positions: vec![[4.0, -1.0, -1.0], [6.0, 1.0, 1.0], [6.0, 0.0, 0.0]],
-            normals: vec![[1.0, 0.0, 0.0], [0.0, 1.0, 1.0], [0.0; 3]],
-            tris: vec![[0, 1, 2], [0, 1, 9]], // the second points past the vertices: dropped
-        };
-        let rot = [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0];
-        let tris = part_tris(&mesh, false, &rot, [10.0, 20.0, 30.0], [4.0, 2.0, 2.0], 0x123456, true);
-        assert_eq!(tris.len(), 1);
-        assert_eq!((tris[0].rgb, tris[0].glow), (0x123456, true));
-        // local (1,0,0) scaled to (2,0,0), turned to (0,0,-2); (1,1,1) -> (2,1,1) -> (1,1,-2)
-        assert_eq!(tris[0].p[2], [10.0, 20.0, 28.0]);
-        assert_eq!(tris[0].p[1], [11.0, 21.0, 28.0]);
-        assert_eq!(tris[0].p[0], [9.0, 19.0, 32.0]);
-        // normals: (1,0,0) / scale (2,1,1), turned to (0,0,-1); (0,1,1) -> (1,1,0)/sqrt2; a zero one stays flat
-        let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-6);
-        assert!(close(tris[0].n[0], [0.0, 0.0, -1.0]));
-        let r = 0.5f32.sqrt();
-        assert!(close(tris[0].n[1], [r, r, 0.0]));
-        assert_eq!(tris[0].n[2], [0.0; 3]);
-        // a squashed axis tilts a normal toward it: (1,1,0) on a part 1 wide (scale 0.5) in x, 2 in y
-        let tilt = Mesh {
-            normals: vec![[1.0, 1.0, 0.0]; 3],
-            ..mesh.clone()
-        };
-        let t = part_tris(
-            &tilt,
-            false,
-            &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-            [0.0; 3],
-            [1.0, 2.0, 2.0],
-            0,
-            false,
-        );
-        let k = 1.0 / 5f32.sqrt();
-        assert!(close(t[0].n[0], [2.0 * k, k, 0.0]));
-        // no normals at all: every corner flat
-        let flat = Mesh {
-            normals: Vec::new(),
-            ..mesh.clone()
-        };
-        let tris = part_tris(&flat, false, &rot, [0.0; 3], [4.0, 2.0, 2.0], 0, false);
-        assert_eq!(tris[0].n, [[0.0; 3]; 3]);
-        // a union keeps its offset from the part's origin: (6,0,0) -> (12,0,0) -> (0,0,-12)
-        let tris = part_tris(&mesh, true, &rot, [10.0, 20.0, 30.0], [4.0, 2.0, 2.0], 0x123456, true);
-        assert_eq!(tris[0].p[2], [10.0, 20.0, 18.0]);
-    }
-
-    #[test]
-    fn reader_part_shapes_fit_like_roblox() {
-        let id = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-        let pos = [10.0, 20.0, 30.0];
-        let shape = |s: u8, size: [f32; 3]| {
-            let (mesh, size) = shape_mesh(s, size);
-            part_tris(mesh, false, &id, pos, size, 0, false)
-        };
-        let corners = |t: &[Tri]| {
-            t.iter()
-                .flat_map(|t| t.p)
-                .map(|p| [0, 1, 2].map(|k| p[k] - pos[k]))
-                .collect::<Vec<_>>()
-        };
-        let len = |v: [f32; 3]| v.iter().map(|c| c * c).sum::<f32>().sqrt();
-        // ball: a sphere of the smallest side, smooth normals pointing out
-        let ball = shape(0, [3.0, 2.0, 5.0]);
-        assert!(corners(&ball).iter().all(|&v| (len(v) - 1.0).abs() < 1e-5));
-        assert!(ball.iter().all(|t| (0..3).all(|i| {
-            let r = [0, 1, 2].map(|k| t.p[i][k] - pos[k]);
-            (0..3).all(|k| (t.n[i][k] - r[k]).abs() < 1e-5)
-        })));
-        // cylinder: along X, size.x long, min(y, z) wide, round caps facing +-X
-        let cyl = shape(2, [4.0, 3.0, 1.0]);
-        let c = corners(&cyl);
-        assert!(c.iter().all(|v| (v[0].abs() - 2.0).abs() < 1e-5));
-        assert!(c.iter().all(|v| (len([0.0, v[1], v[2]]) - 0.5).abs() < 1e-5));
-        assert!(cyl.iter().any(|t| t.n == [[1.0, 0.0, 0.0]; 3]) && cyl.iter().any(|t| t.n == [[-1.0, 0.0, 0.0]; 3]));
-        // wedge: full bottom, tall back (+Z), the top only along the back edge
-        let mut w = corners(&shape(3, [2.0, 4.0, 6.0]));
-        w.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        w.dedup();
-        let want = [
-            [-1.0, -2.0, -3.0],
-            [-1.0, -2.0, 3.0],
-            [-1.0, 2.0, 3.0],
-            [1.0, -2.0, -3.0],
-            [1.0, -2.0, 3.0],
-            [1.0, 2.0, 3.0],
-        ];
-        assert_eq!(w, want);
-        // block and anything unknown (CornerWedge too): the cube
-        assert_eq!(shape(1, [1.0; 3]).len(), 12);
-        assert_eq!(shape(4, [1.0; 3]).len(), 12);
     }
 
     #[test]

@@ -13,7 +13,6 @@ use handy_sdk::ui::Tone;
 use handy_sdk::ui::d2d::add_font_file;
 use handy_sdk::ui::dashboard::{Dashboard, Span, Spec, check, page, rich_value, section, tile, value};
 use handy_sdk::ui::overlay::StatusOverlay;
-use handy_sdk::ui::raster::render;
 use handy_sdk::util::paths::app_data_dir;
 use windows::Win32::UI::WindowsAndMessaging::SHOW_WINDOW_CMD;
 
@@ -69,7 +68,6 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
     let font_tried_for = RefCell::new(String::new()); // Roblox exe whose font we loaded (or tried to)
     let bot = deps.bot;
     let roblox_pid = Cell::new(0u32);
-    let started = Instant::now(); // the last catch's model turns with time since
     let session_due = Cell::new(Instant::now()); // when the time fishing and the /h rates refresh next
     let rates = RefCell::new((String::new(), String::new(), String::new())); // catches, value, xp
     let quit_by: Cell<Option<Instant>> = Cell::new(None); // set by the first close: exit when the bot is ready, or then
@@ -295,22 +293,8 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             f.as_ref()
                 .and_then(|f| if f.looked { f.tint } else { mutation_tint(f) })
         };
-        let yaw = started.elapsed().as_secs_f32() * 0.8; // radians: one slow turn about every 8 s
-        for (id, model, fish) in [
-            (ID_LAST, &v.last_model, &v.last_fish),
-            (ID_RAREST, &v.rarest_model, &v.rarest_fish),
-        ] {
-            if !ui.picture_visible(id) {
-                continue; // hidden: rendering would only burn CPU; the next visible tick catches up
-            }
-            match (model, ui.picture_size(id)) {
-                (Some(model), Some((w, h))) if w > 0 && h > 0 => {
-                    ui.set_picture_pixels(id, w, h, &render(model, w, h, yaw));
-                }
-                _ => {
-                    ui.set_picture(id, &picture(fish), tint(fish));
-                }
-            }
+        for (id, fish) in [(ID_LAST, &v.last_fish), (ID_RAREST, &v.rarest_fish)] {
+            ui.set_picture(id, &picture(fish), tint(fish));
         }
         ui.set_spans(ID_COINS, &coin_spans(&v.coins));
         ui.set_spans(
