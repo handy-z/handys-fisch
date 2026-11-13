@@ -357,9 +357,9 @@ impl SafetyGuard {
             self.unequip_at = None;
         } else if self.finish_fish && !out && !reeling {
             self.finish_fish = false;
-            // The game ignores the rod's key for a moment after a catch (a cast held through it goes ~0.2 s after the
-            // rod turns idle, seen live), so the first press waits past that.
-            self.unequip_at = Some(t.now + MS(500));
+            // The game ignores the rod's key until the catch's reel bar is gone, ~0.6 s after the rod turns idle (seen
+            // live): the first press waits for that below.
+            self.unequip_at = Some(t.now);
             self.unequip_tries = 0;
             a.reel_over = true;
         }
@@ -429,12 +429,13 @@ impl SafetyGuard {
             if let Some(at) = self.unequip_at {
                 if s.is_some_and(|s| s.rod.is_empty()) {
                     self.unequip_at = None; // gone: done
-                } else if t.now >= at && t.focused && !typing && !out && !reeling {
-                    // Still in hand: press again, but only after the last press had time to show (a rod takes ~1 s
-                    // to appear or go), or a second press would equip it again.
+                } else if t.now >= at && t.focused && !typing && !out && !reeling && s.is_some_and(|s| s.reel.is_none())
+                {
+                    // Still in hand: press again, but only after the last press had time to show (a rod goes within
+                    // ~0.2 s of an accepted press, seen live), or a second press would equip it again.
                     a.unequip = true;
                     self.unequip_tries += 1;
-                    self.unequip_at = (self.unequip_tries < 3).then(|| t.now + MS(1500));
+                    self.unequip_at = (self.unequip_tries < 3).then(|| t.now + MS(600));
                 }
             }
             if self.unequip_pending && t.focused && !typing {
@@ -1464,14 +1465,13 @@ mod tests {
         assert!(g.tick(&tk(t0 + MS(10), false, true, false, false, &s)).fish); // focused: waits for the bite
         assert!(g.tick(&tk(t0 + MS(20), false, true, false, false, &reeling)).fish); // bit: reels it in
         let a = g.tick(&tk(t0 + MS(30), false, true, false, false, &idle));
-        assert!(!a.fish && a.reel_over && !a.unequip && !g.finishing());
-        assert!(g.tick(&tk(t0 + MS(600), false, true, false, false, &idle)).unequip);
+        assert!(!a.fish && a.reel_over && a.unequip && !g.finishing()); // reel bar already gone: at once
         // got away (the line came in without a reel): unequipped all the same
         let mut g = SafetyGuard::default();
         g.tick(&tk(t0, true, true, false, false, &s));
         g.tick(&tk(t0 + MS(5), false, true, false, false, &s));
-        assert!(!g.tick(&tk(t0 + MS(10), false, true, false, false, &idle)).fish);
-        assert!(g.tick(&tk(t0 + MS(600), false, true, false, false, &idle)).unequip);
+        let a = g.tick(&tk(t0 + MS(10), false, true, false, false, &idle));
+        assert!(!a.fish && a.unequip);
         // closing while it waits for a bite: the line comes in now
         let mut g = SafetyGuard::default();
         g.tick(&tk(t0, true, true, false, false, &s));
@@ -1492,17 +1492,22 @@ mod tests {
         assert!(g.tick(&tk(t0, true, true, false, false, &reeling)).fish);
         let a = g.tick(&tk(t0 + MS(5), false, true, false, false, &reeling)); // F1 mid-reel
         assert!(!a.on && a.fish && !a.unequip); // stays off, but the reel plays out
-        let a = g.tick(&tk(t0 + MS(10), false, true, false, false, &idle)); // over
-        assert!(!a.fish && a.reel_over && !a.unequip); // not yet: the game ignores the key right after a catch
-        assert!(!g.tick(&tk(t0 + MS(400), false, true, false, false, &idle)).unequip);
+        // the catch's reel bar lingers ~0.6 s after the rod turns idle; the game ignores the key until it goes
+        let bar_up = FishState {
+            reel: Some(Reel::default()),
+            ..idle.clone()
+        };
+        let a = g.tick(&tk(t0 + MS(10), false, true, false, false, &bar_up)); // over
+        assert!(!a.fish && a.reel_over && !a.unequip);
+        assert!(!g.tick(&tk(t0 + MS(400), false, true, false, false, &bar_up)).unequip);
         assert!(!g.tick(&tk(t0 + MS(600), false, false, false, false, &idle)).unequip); // waits for Roblox focus
-        let a = g.tick(&tk(t0 + MS(610), false, true, false, false, &idle));
+        let a = g.tick(&tk(t0 + MS(610), false, true, false, false, &idle)); // bar gone, focused: now
         assert!(a.unequip && !a.reel_over && !a.fish);
         assert!(!g.tick(&tk(t0 + MS(1000), false, true, false, false, &idle)).unequip); // too soon to retry
-        assert!(g.tick(&tk(t0 + MS(2200), false, true, false, false, &idle)).unequip); // ignored: pressed again
+        assert!(g.tick(&tk(t0 + MS(1220), false, true, false, false, &idle)).unequip); // ignored: pressed again
         let mut gone = idle.clone();
         gone.rod = String::new();
-        assert!(!g.tick(&tk(t0 + MS(2300), false, true, false, false, &gone)).unequip);
+        assert!(!g.tick(&tk(t0 + MS(1300), false, true, false, false, &gone)).unequip);
         assert!(!g.tick(&tk(t0 + MS(9000), false, true, false, false, &idle)).unequip); // done once it went
         // never more than 3 presses
         let mut g = SafetyGuard::default();
