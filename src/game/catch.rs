@@ -444,7 +444,7 @@ pub fn level_pieces(level: i32, xp: f64) -> Vec<Piece> {
     let have = (xp as i64).clamp(0, need); // xp is fractional
     vec![
         piece(format!("Level {level}"), "ffdcac", false, false, HUD_STROKE),
-        piece(format!(" · {}% · ", have * 100 / need), "", false, false, ""),
+        piece(format!("\n{}% · ", have * 100 / need), "", false, false, ""), // a tile's small second line
         piece(
             format!(
                 "{} / {} xp",
@@ -501,8 +501,13 @@ pub fn rod_pieces(label: &str, equipped: bool, stats: &[String]) -> Vec<Piece> {
     if !equipped {
         out.push(piece(" (not equipped)", "", false, false, ""));
     }
+    // two to a line in the game's order (the dashboard's tab stop is the second column); a long one gets its own line
+    const WIDE: usize = 24;
+    let mut second = false; // the next short stat goes in the second column
     for s in stats {
-        out.push(piece("\n", "", false, false, "")); // one to a line, as the game lists them
+        let wide = s.chars().count() > WIDE;
+        out.push(piece(if second && !wide { "\t" } else { "\n" }, "", false, false, ""));
+        second = !wide && !second;
         let bonus = if s.ends_with(')') { s.rfind(" (") } else { None };
         let main = &s[..bonus.map_or(s.len(), |b| b + 1)];
         // muted name, bright value, so the list reads as two columns
@@ -773,11 +778,8 @@ mod tests {
         assert_eq!(level_xp(999), 189810);
         assert_eq!(level_xp(1000), 380000); // wiki table: level 1001 costs 1000 × 190 × 2
         assert_eq!(level_xp(1500), 1140000); // × 4 from level 1501
-        assert_eq!(
-            plain(&level_pieces(123, 7244.49)),
-            "Level 123 · 30% · 7,244 / 23,370 xp"
-        ); // the game's xp is fractional
-        assert_eq!(plain(&level_pieces(123, -1.0)), "Level 123 · 0% · 0 / 23,370 xp");
+        assert_eq!(plain(&level_pieces(123, 7244.49)), "Level 123\n30% · 7,244 / 23,370 xp"); // the game's xp is fractional
+        assert_eq!(plain(&level_pieces(123, -1.0)), "Level 123\n0% · 0 / 23,370 xp");
         let p = level_pieces(123, 0.0);
         assert!(p[0].color == "ffdcac" && p.last().unwrap().color == "fff4d9"); // the HUD's
         assert!(p[0].stroke == HUD_STROKE);
@@ -821,7 +823,7 @@ mod tests {
         );
         assert_eq!(
             plain(&p),
-            "★ Momentum ★ Carrot Rod\nLure Speed: 85% (+28%)\nLuck: 125%\nCaught: 737"
+            "★ Momentum ★ Carrot Rod\nLure Speed: 85% (+28%)\tLuck: 125%\nCaught: 737"
         );
         assert!(p.len() >= 5);
         assert_eq!(p[0], piece("★ Momentum ★ ", "d3b380", true, false, LABEL_STROKE)); // no outline on the wiki

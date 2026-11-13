@@ -99,13 +99,14 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             tile(ID_RAREST, "Rarest").picture(90).lines(3),
             page("Player"),
             section("Gear"),
-            rich_value(ID_ROD, "Rod").lines(11), // name + up to 10 stat lines (Rod Of The Depths has 9)
+            // name + stats two to a line (Rod Of The Depths' 9 take 6 lines); room for a few long ones
+            rich_value(ID_ROD, "Rod").lines(8),
             rich_value(ID_BAIT, "Bait"),
             section("Progress"),
-            rich_value(ID_COINS, "Coins"),
-            rich_value(ID_LEVEL, "Level"),
-            rich_value(ID_BESTIARY, "Bestiary"),
-            rich_value(ID_LIFETIME, "All time"),
+            tile(ID_COINS, "Coins"),
+            tile(ID_LEVEL, "Level"),
+            tile(ID_BESTIARY, "Bestiary"),
+            tile(ID_LIFETIME, "All time"),
             section("Location"),
             rich_value(ID_LOCATION, "Zone").lines(2),
         ],
@@ -209,7 +210,7 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
         let bestiary = match bestiary_color(&pl.bestiary) {
             Some(color) => {
                 let mut s = styled(&pl.bestiary, &color, true, LABEL_STROKE);
-                s.extend(styled(" overall", "b3b3b3", false, LABEL_STROKE));
+                s.extend(styled("\noverall", "b3b3b3", false, LABEL_STROKE));
                 s
             }
             None if pl.bestiary.is_empty() => styled("–", "", false, ""),

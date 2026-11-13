@@ -116,14 +116,14 @@ pub fn xp_spans(xp: i64, rate: &str) -> Vec<Span> {
     ]
 }
 
-/// "1,234 fish · " "56 shiny" " · " "7 sparkling" " · 120 h played", shiny and sparkling in the bestiary's #ffe669
+/// "1,234 fish\n" "56 shiny" " · " "7 sparkling" " · 120 h played", shiny and sparkling in the bestiary's #ffe669
 /// and #fff9a5, outlined as its mutation list is. "–" before the counts are read (fish <= 0).
 pub fn lifetime_spans(fish: i64, shiny: i64, sparkling: i64, hours: i64) -> Vec<Span> {
     if fish <= 0 {
         return vec![Span::plain("–")];
     }
     vec![
-        Span::plain(&format!("{} fish · ", group_thousands(fish))),
+        Span::plain(&format!("{} fish\n", group_thousands(fish))), // a tile: the count big, the rest small
         game_span(
             format!("{} shiny", group_thousands(shiny)),
             "ffe669",
@@ -306,7 +306,7 @@ mod tests {
         );
         let all = lifetime_spans(1234, 56, 7, 120);
         let text: String = all.iter().map(|s| s.text.as_str()).collect();
-        assert_eq!(text, "1,234 fish · 56 shiny · 7 sparkling · 120 h played");
+        assert_eq!(text, "1,234 fish\n56 shiny · 7 sparkling · 120 h played");
         assert!(all.len() == 5 && all[1].colors == hex_colors("ffe669") && all[3].colors == hex_colors("fff9a5"));
         assert_eq!(lifetime_spans(0, 0, 0, 0), vec![Span::plain("–")]);
         let level = Piece {
