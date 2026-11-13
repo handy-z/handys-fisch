@@ -337,9 +337,9 @@ pub fn odds_color(odds: i32) -> String {
 
 /// "Big " "Fallen " "Bigeye Trevally" (bold, in their size, mutation and rarity colors from the wiki), " · "
 /// "Legendary" in the tier's color, "\n", "15,505" (bold grey) " kg · " "1/9,662" (bold, odds_color), the game's parts
-/// outlined as the catch line is (CATCH_STROKE); then " · " "≈ 612 C$" (the shops' price green) and, once the XP popup
-/// was read, " · " "+8,535 XP" (its gold). Numbers are grouped
-/// like the game; unknown parts and the Common tier left out.
+/// outlined as the catch line is (CATCH_STROKE); then "\n" "≈ 612 C$" (the shops' price green) and, once the XP popup
+/// was read, " · " "+8,535 XP" (its gold). Numbers are grouped like the game; unknown parts and the Common tier left
+/// out.
 pub fn catch_pieces(c: &Catch) -> Vec<Piece> {
     // As the game's catch line styles it (its rich text, read live): name words bold in their size, mutation and
     // rarity colors, the weight number bold #b3b3b3 before a plain "kg", the odds bold in odds_color.
@@ -388,9 +388,12 @@ pub fn catch_pieces(c: &Catch) -> Vec<Piece> {
             true,
         );
     }
+    // value and XP on a third line: three short lines fit a half-width dashboard tile
+    if c.value.is_some() || c.xp.is_some() {
+        out.push(piece("\n", "", false, false, ""));
+    }
     if let Some(v) = c.value {
         // the popup has no price: the shops' C$ green (#a2eaa6 on their price labels)
-        out.push(piece(" · ", "", false, false, ""));
         out.push(piece(
             format!("≈ {} C$", with_commas((v as i64).to_string())),
             "a2eaa6",
@@ -400,7 +403,9 @@ pub fn catch_pieces(c: &Catch) -> Vec<Piece> {
         ));
     }
     if let Some(xp) = c.xp {
-        out.push(piece(" · ", "", false, false, ""));
+        if c.value.is_some() {
+            out.push(piece(" · ", "", false, false, ""));
+        }
         out.push(piece(
             format!("+{} XP", with_commas(xp.to_string())),
             "ffd43a",
@@ -728,13 +733,15 @@ mod tests {
     #[test]
     fn catch_details_line() {
         let mut c = parse_catch("You just caught a Big Fallen Batfish at 11.6kg! (1/9)").unwrap();
-        assert!(plain_catch(&c).ends_with("11.6 kg · 1/9 · ≈ 612 C$")); // Common: no tier word
+        assert!(plain_catch(&c).ends_with("Batfish\n11.6 kg · 1/9\n≈ 612 C$")); // Common: no tier word
         c.rarity = "Legendary".into();
-        assert!(plain_catch(&c).ends_with(" · Legendary\n11.6 kg · 1/9 · ≈ 612 C$")); // the tier follows the name
+        assert!(plain_catch(&c).ends_with(" · Legendary\n11.6 kg · 1/9\n≈ 612 C$")); // the tier follows the name
         let p = catch_pieces(&c);
         assert!(p.iter().any(|x| x.text == "Legendary" && x.color == "f0b56d"));
         c.xp = Some(8535);
-        assert!(plain_catch(&c).ends_with("1/9 · ≈ 612 C$ · +8,535 XP")); // after the XP popup
+        assert!(plain_catch(&c).ends_with("1/9\n≈ 612 C$ · +8,535 XP")); // after the XP popup
+        c.value = None;
+        assert!(plain_catch(&c).ends_with("1/9\n+8,535 XP")); // no price: the XP alone
     }
 
     #[test]

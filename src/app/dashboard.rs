@@ -93,10 +93,10 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             tile(ID_XP, "XP gained"),
             tile(ID_TIME, "Time fishing"),
             section("Fish"), // kept across restarts
-            // name, then kg · odds · value, in the game's colors and font; the fish's picture
-            // the model fits the slot's smaller side: 3 lines fit the 2 text lines, the extra width helps long fish
-            rich_value(ID_LAST, "Last catch").lines(3).picture(130),
-            rich_value(ID_RAREST, "Rarest").lines(3).picture(130),
+            // Last catch | Rarest: the fish's picture over name · rarity, kg · odds, value · xp in the game's colors;
+            // the picture is about 2:1 across the ~220 DIP tile, as long fish are
+            tile(ID_LAST, "Last catch").picture(90).lines(3),
+            tile(ID_RAREST, "Rarest").picture(90).lines(3),
             page("Player"),
             section("Gear"),
             rich_value(ID_ROD, "Rod").lines(11), // name + up to 10 stat lines (Rod Of The Depths has 9)
