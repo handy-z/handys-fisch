@@ -357,12 +357,15 @@ pub fn catch_pieces(c: &Catch) -> Vec<Piece> {
         line(&mut out, format!("{m} "), color, true);
     }
     line(&mut out, c.species.clone(), tier, true);
-    // most catches are Common: only the rarer tiers are worth a word
-    if !c.rarity.is_empty() && c.rarity != "Common" {
-        out.push(piece(" · ", "", false, false, ""));
-        out.push(piece(c.rarity.clone(), tier, false, false, ""));
-    }
     out.push(piece("\n", "", false, false, ""));
+    // most catches are Common: only the rarer tiers are worth a word; on the weight's line, so a long name with its
+    // mutations keeps the first line of a half-width tile to itself
+    if !c.rarity.is_empty() && c.rarity != "Common" {
+        out.push(piece(c.rarity.clone(), tier, false, false, ""));
+        if c.kg > 0.0 || c.odds != 0 {
+            out.push(piece(" · ", "", false, false, ""));
+        }
+    }
     if c.kg > 0.0 {
         // "Rare Find!" catches have no weight
         line(&mut out, with_commas(kg_text(c.kg)), "b3b3b3", true);
@@ -609,14 +612,14 @@ mod tests {
         assert_eq!(c.mutations, strs(&["Fallen"]));
         assert_eq!(c.species, "Bigeye Trevally");
         assert!(c.kg == 3.5 && c.odds == 12);
-        assert!(plain_catch(&c).starts_with("Big Fallen Bigeye Trevally · Unusual\n3.5 kg · 1/12"));
+        assert!(plain_catch(&c).starts_with("Big Fallen Bigeye Trevally\nUnusual · 3.5 kg · 1/12"));
     }
 
     #[test]
     fn catch_plain_and_multiword_species() {
         let c = parse_catch("You just caught a Stalactite at 7.9kg! (1/4)").unwrap();
         assert!(c.size.is_empty() && c.mutations.is_empty() && c.species == "Stalactite" && c.odds == 4);
-        assert!(plain_catch(&c).starts_with("Stalactite · Trash\n7.9 kg · 1/4"));
+        assert!(plain_catch(&c).starts_with("Stalactite\nTrash · 7.9 kg · 1/4"));
         let c = parse_catch("You just caught a Fallen Regal Angelfish at 1kg! (1/37)").unwrap();
         assert!(c.mutations == strs(&["Fallen"]) && c.species == "Regal Angelfish" && c.kg == 1.0);
     }
@@ -625,7 +628,7 @@ mod tests {
     fn catch_longest_and_stacked_mutations() {
         let c = parse_catch("You just caught an Abyssal Tidal Surge Shiny Cod at 12kg! (1/900)").unwrap();
         assert!(c.mutations == strs(&["Abyssal", "Tidal Surge", "Shiny"]) && c.species == "Cod");
-        assert!(plain_catch(&c).starts_with("Abyssal Tidal Surge Shiny Cod · Uncommon\n12 kg · 1/900"));
+        assert!(plain_catch(&c).starts_with("Abyssal Tidal Surge Shiny Cod\nUncommon · 12 kg · 1/900"));
     }
 
     #[test]
@@ -668,7 +671,7 @@ mod tests {
         assert!(c.odds == 1000 && c.kg == 0.0 && c.value.is_none()); // not on the wiki, so "Lunar" reads as a mutation
         assert_eq!(plain_catch(&c), "Lunar Thread\n1/1,000");
         let c = parse_catch("Rare Find! You just caught a Shell! (1/100)").unwrap();
-        assert!(c.species == "Shell" && c.odds == 100 && plain_catch(&c).ends_with("\n1/100"));
+        assert!(c.species == "Shell" && c.odds == 100 && plain_catch(&c).ends_with("\nExtinct · 1/100"));
         let c = parse_catch("Rare Find! You just caught a Shiny Cod! (1/100)").unwrap(); // known species: no price
         assert!(c.species == "Cod" && c.mutations == strs(&["Shiny"]) && c.value.is_none());
         assert!(parse_catch("Rare Find! You just caught a ! (1/100)").is_none());
@@ -723,7 +726,7 @@ mod tests {
     fn catch_weight_with_thousands_separator() {
         let c = parse_catch("You just caught a Big Fallen Sand Tiger Shark at 15,505kg! (1/22)").unwrap(); // seen live
         assert!(c.kg == 15505.0 && c.odds == 22 && c.species == "Sand Tiger Shark");
-        assert!(plain_catch(&c).starts_with("Big Fallen Sand Tiger Shark · Mythical\n15,505 kg · 1/22"));
+        assert!(plain_catch(&c).starts_with("Big Fallen Sand Tiger Shark\nMythical · 15,505 kg · 1/22"));
         let c = parse_catch("You just caught a Cod at 1,234,567.5kg! (1/2)").unwrap();
         assert!(c.kg > 1234567.0 && c.kg < 1234568.0);
         assert!(parse_catch("You just caught a Cod at 1,2x5kg! (1/2)").is_none());
@@ -740,11 +743,11 @@ mod tests {
     #[test]
     fn catch_text_groups_digits_like_the_game() {
         let c = parse_catch("You just caught a Fallen Sand Tiger Shark at 11,345.8kg! (1/126)").unwrap();
-        assert!(plain_catch(&c).starts_with("Fallen Sand Tiger Shark · Mythical\n11,345.8 kg · 1/126"));
+        assert!(plain_catch(&c).starts_with("Fallen Sand Tiger Shark\nMythical · 11,345.8 kg · 1/126"));
         let c = parse_catch("You just caught a Shiny Squalled Seaweed at 0.1kg! (1/9,662)").unwrap();
-        assert!(plain_catch(&c).starts_with("Shiny Squalled Seaweed · Trash\n0.1 kg · 1/9,662"));
+        assert!(plain_catch(&c).starts_with("Shiny Squalled Seaweed\nTrash · 0.1 kg · 1/9,662"));
         let c = parse_catch("You just caught a Cod at 999kg! (1/1,234,567)").unwrap();
-        assert!(plain_catch(&c).starts_with("Cod · Uncommon\n999 kg · 1/1,234,567"));
+        assert!(plain_catch(&c).starts_with("Cod\nUncommon · 999 kg · 1/1,234,567"));
     }
 
     #[test]
@@ -794,7 +797,7 @@ mod tests {
         let mut c = parse_catch("You just caught a Big Fallen Batfish at 11.6kg! (1/9)").unwrap();
         assert!(plain_catch(&c).ends_with("Batfish\n11.6 kg · 1/9\n≈ 612 C$")); // Common: no tier word
         c.rarity = "Legendary".into();
-        assert!(plain_catch(&c).ends_with(" · Legendary\n11.6 kg · 1/9\n≈ 612 C$")); // the tier follows the name
+        assert!(plain_catch(&c).ends_with("\nLegendary · 11.6 kg · 1/9\n≈ 612 C$")); // the tier leads the weight line
         let p = catch_pieces(&c);
         assert!(p.iter().any(|x| x.text == "Legendary" && x.color == "f0b56d"));
         c.xp = Some(8535);
