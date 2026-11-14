@@ -1,6 +1,6 @@
 [package]
 name = "handys-fisch"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 # 1.88 stabilized let-chains (used throughout); PanicHookInfo::payload_as_str needs 1.91 (clippy::incompatible_msrv checks the rest).
 rust-version = "1.99"
