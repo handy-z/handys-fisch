@@ -546,6 +546,56 @@ fn hue_rate(a: u32, b: u32, secs: f32) -> f32 {
     if rate.abs() < 3.0 { 0.0 } else { rate }
 }
 
+/// A session catch for Earned: its rarity, estimated value, and whether auto fish was on (the /h rates count those).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoldCatch {
+    pub rarity: String,
+    pub value: i64,
+    pub while_on: bool,
+}
+
+/// The rarities the game's Sell All has a switch for (Settings/willautosell_<lowercase>); the rest are always sold.
+pub const RARITY_SWITCHES: [&str; 11] = [
+    "Legendary",
+    "Mythical",
+    "Exotic",
+    "Secret",
+    "Relic",
+    "Gemstone",
+    "Extinct",
+    "Special",
+    "Event",
+    "Apex",
+    "Cataclysmic",
+];
+
+/// Earned over `catches` under `filter` (None: every catch): (value, its part caught while auto fish was on, catches
+/// kept).
+pub fn earned(catches: &[SoldCatch], filter: Option<&HashMap<String, bool>>) -> (i64, i64, i32) {
+    let mut out = (0, 0, 0);
+    for c in catches {
+        if filter.is_some_and(|f| !sells(f, &c.rarity)) {
+            out.2 += 1;
+        } else {
+            out.0 += c.value;
+            out.1 += if c.while_on { c.value } else { 0 };
+        }
+    }
+    out
+}
+
+/// The user's own filter (Settings::sold_rarities) in the game's form: every switchable rarity, sold when listed.
+pub fn my_filter(sold: &[String]) -> HashMap<String, bool> {
+    RARITY_SWITCHES
+        .iter()
+        .map(|r| {
+            let key = r.to_lowercase();
+            let on = sold.contains(&key);
+            (key, on)
+        })
+        .collect()
+}
+
 /// Whether the game's Sell All sells a catch of `rarity` under `filter` (sell_filter): the rarity's own switch, else
 /// sold (the lower rarities have none).
 // shortcut: Divine Secret and Limited have no switch of their own; they follow Secret and Event, a guess from the names
@@ -607,15 +657,11 @@ pub struct Bot {
     pub best_streak: AtomicI32,
     /// catches made while auto fish was on: the /h rate uses these
     pub macro_caught: AtomicI32,
-    /// this session: estimated C$ of the fish caught, XP given
-    pub caught_value: AtomicI64,
-    /// catches this session the game's Sell All filters keep (left out of caught_value); with sell_filter_read, whether
-    /// those filters could be read (else every catch counts)
-    pub kept: AtomicI32,
-    pub sell_filter_read: AtomicBool,
+    /// this session's catches as Earned counts them (earned()), and the game's Sell All filters once read
+    pub sold: Mutex<Vec<SoldCatch>>,
+    pub game_filter: Mutex<Option<HashMap<String, bool>>>,
+    /// this session's XP, and the part gained while auto fish was on (for the rate)
     pub xp_gained: AtomicI64,
-    /// the part caught while auto fish was on (for the rates)
-    pub macro_value: AtomicI64,
     pub macro_xp: AtomicI64,
     /// time spent fishing (on, focused, in game, not typing)
     pub active_ms: AtomicI64,
@@ -656,7 +702,6 @@ struct Engine<'a> {
     bot: &'a Bot,
     toggle: KeyPoller,
     rarest_odds: i32,
-    sell_filter: Option<HashMap<String, bool>>, // the game's Sell All filters (GameReader::sell_filter), once read
     held: bool,
     nav: bool,
     reeling: bool,
@@ -705,11 +750,9 @@ impl Bot {
             streak: AtomicI32::new(0),
             best_streak: AtomicI32::new(0),
             macro_caught: AtomicI32::new(0),
-            caught_value: AtomicI64::new(0),
-            kept: AtomicI32::new(0),
-            sell_filter_read: AtomicBool::new(false),
+            sold: Mutex::new(Vec::new()),
+            game_filter: Mutex::new(None),
             xp_gained: AtomicI64::new(0),
-            macro_value: AtomicI64::new(0),
             macro_xp: AtomicI64::new(0),
             active_ms: AtomicI64::new(0),
             casts: AtomicI32::new(0),
@@ -747,7 +790,6 @@ impl Bot {
             bot: self,
             toggle: KeyPoller::default(),
             rarest_odds: 0,
-            sell_filter: None,
             held: false,
             nav: false,
             reeling: false,
@@ -894,23 +936,12 @@ impl Engine<'_> {
         bot.best_streak.store(bot.best_streak.load(SeqCst).max(streak), SeqCst);
         self.lost_streak = 0;
         let c = parse_catch(text);
-        // only what the game's Sell All would sell counts as earned
-        let sold = match (&self.sell_filter, &c) {
-            (Some(f), Some(c)) => sells(f, &c.rarity),
-            _ => true,
-        };
-        if !sold {
-            bot.kept.fetch_add(1, SeqCst);
-        }
-        let value = c
-            .as_ref()
-            .and_then(|c| c.value)
-            .filter(|_| sold)
-            .map_or(0, |v| v as i64);
-        bot.caught_value.fetch_add(value, SeqCst);
-        if bot.on.load(SeqCst) {
-            bot.macro_value.fetch_add(value, SeqCst);
-        }
+        let value = c.as_ref().and_then(|c| c.value).map_or(0, |v| v as i64);
+        bot.sold.lock().unwrap().push(SoldCatch {
+            rarity: c.as_ref().map(|c| c.rarity.clone()).unwrap_or_default(),
+            value,
+            while_on: bot.on.load(SeqCst),
+        });
         let mut new_rarest = false;
         {
             let mut v = bot.view.lock().unwrap();
@@ -1276,8 +1307,7 @@ impl Engine<'_> {
                         bot.view.lock().unwrap().world = w;
                     }
                     if let Some(f) = r.sell_filter() {
-                        self.sell_filter = Some(f);
-                        bot.sell_filter_read.store(true, SeqCst);
+                        *bot.game_filter.lock().unwrap() = Some(f);
                     }
                 }
             }
@@ -1446,6 +1476,28 @@ mod tests {
         assert!(!sells(&f, "Legendary") && !sells(&f, "Mythical"));
         assert!(sells(&f, "Common") && sells(&f, "Uncommon") && sells(&f, "")); // no switch: always sold
         assert!(!sells(&f, "Divine Secret") && sells(&f, "Limited+")); // following Secret and Event
+    }
+
+    #[test]
+    fn bot_earned_follows_the_filter() {
+        let c = |rarity: &str, value, while_on| SoldCatch {
+            rarity: rarity.into(),
+            value,
+            while_on,
+        };
+        let catches = [
+            c("Common", 10, true),
+            c("Legendary", 500, true),
+            c("Mythical", 900, false),
+        ];
+        assert_eq!(earned(&catches, None), (1410, 510, 0)); // everything
+        let game: HashMap<String, bool> = [("legendary", false), ("mythical", true)]
+            .map(|(k, v)| (k.into(), v))
+            .into();
+        assert_eq!(earned(&catches, Some(&game)), (910, 10, 1)); // Legendary kept
+        let mine = my_filter(&["legendary".into()]);
+        assert_eq!(earned(&catches, Some(&mine)), (510, 510, 1)); // only Legendary of the switchable ones sold
+        assert_eq!(mine.len(), RARITY_SWITCHES.len());
     }
 
     #[test]
