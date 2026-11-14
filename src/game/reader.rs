@@ -38,6 +38,105 @@ const VP_LIGHT_COLOR: usize = 0x6c0;
 const VP_LIGHT_DIRECTION: usize = 0x6cc;
 const LOOK_DOWN: f32 = 0.4; // radians the fallback camera looks down at the model from
 
+/// A part's (rgb, transparency, material), for model_tint.
+type PartLook = (u32, f32, u16);
+
+/// A model's solid parts (under `kids`, at most 64; meshes from `dm`'s caches) as world-space triangles, painted by material, with the MeshParts'
+/// texture assets (a Tri's tex is 1 + an index) and, when `recolored`, every part's (rgb, transparency, material)
+/// for model_tint. Empty triangles when no body mesh was read.
+fn model_tris(
+    m: &dyn Memory,
+    o: &Offsets,
+    dm: usize,
+    kids: Vec<usize>,
+    recolored: bool,
+) -> (Vec<Tri>, Vec<String>, Vec<PartLook>) {
+    let p = m;
+    let mut parts = Vec::new();
+    let mut meshes = Vec::new(); // (mesh id, rotation, position, size, paint)
+    let mut textures: Vec<String> = Vec::new(); // the MeshParts' TextureIDs; a Tri's tex is 1 + an index here
+    let mut boxes = Vec::new();
+    let mut solids = 0;
+    let mut stack = kids;
+    while let Some(c) = stack.pop() {
+        if solids >= 64 {
+            break; // plenty to average and draw; a huge model stays cheap
+        }
+        // every solid part kind: Piranha and Anomalocaris bodies are unions (PartOperation)
+        let class = instance_class(p, o, c);
+        if matches!(
+            class.as_deref(),
+            Some("Part" | "MeshPart" | "PartOperation" | "UnionOperation" | "WedgePart" | "CornerWedgePart")
+        ) {
+            let rgb = m.get::<[u8; 4]>(o.at(c, "BasePart.Color3")).unwrap_or_default();
+            let prim = m.get::<usize>(o.at(c, "BasePart.Primitive")).unwrap_or(0);
+            let rgb = u32::from_be_bytes([0, rgb[0], rgb[1], rgb[2]]);
+            let transparency = m.get::<f32>(o.at(c, "BasePart.Transparency")).unwrap_or(1.0);
+            let material = if prim == 0 {
+                0
+            } else {
+                m.get::<u16>(o.at(prim, "Primitive.Material")).unwrap_or(0)
+            };
+            solids += 1;
+            if recolored {
+                parts.push((rgb, transparency, material));
+            }
+            // fully transparent parts (the Hitbox) aren't drawn by the game either
+            if transparency < 1.0
+                && let Some(id) = part_mesh_id(m, o, c)
+                && let Some((rot, pos, size)) = part_frame(m, o, c)
+            {
+                let tex = mesh_texture(m, o, c).map_or(0, |t| {
+                    let i = textures.iter().position(|x| *x == t).unwrap_or_else(|| {
+                        textures.push(t);
+                        textures.len() - 1
+                    });
+                    i as u32 + 1
+                });
+                meshes.push((
+                    id,
+                    rot,
+                    pos,
+                    size,
+                    Tri {
+                        tex,
+                        ..material_look(rgb, material)
+                    },
+                ));
+            } else if transparency < 1.0
+                && matches!(class.as_deref(), Some("Part" | "WedgePart"))
+                && let Some((rot, pos, size)) = part_frame(m, o, c)
+            {
+                // an optional key: without it every plain Part is a block
+                let shape = if class.as_deref() == Some("WedgePart") {
+                    3
+                } else if o.values.contains_key("BasePart.Shape") {
+                    m.get::<u8>(o.at(c, "BasePart.Shape")).unwrap_or(1)
+                } else {
+                    1
+                };
+                let (mesh, size) = shape_mesh(shape, size);
+                boxes.extend(part_tris(mesh, false, &rot, pos, size, material_look(rgb, material)));
+            }
+        }
+        stack.extend(children(p, o, c));
+    }
+    let mut model = Vec::new();
+    if !meshes.is_empty() {
+        let ids: Vec<(u64, bool)> = meshes.iter().map(|x| x.0).collect();
+        let cache = cached_meshes(m, o, dm, &ids);
+        for (id, rot, pos, size, paint) in &meshes {
+            if let Some(mesh) = cache.get(&id.0) {
+                model.extend(part_tris(mesh, id.1, rot, *pos, *size, *paint));
+            }
+        }
+    }
+    if !model.is_empty() {
+        model.extend(boxes); // the eyes of a fish whose body was read; alone they are no picture
+    }
+    (model, textures, parts)
+}
+
 /// The popup's camera (position, row-major rotation whose columns are right, up and back) and Scene: its Camera child
 /// and lighting, else a camera looking down at the model's center like the dashboard's old view and the
 /// ViewportFrame's default light.
@@ -290,13 +389,9 @@ fn part_tris(mesh: &Mesh, union: bool, rot: &[f32; 9], pos: [f32; 3], size: [f32
     // a MeshPart mesh is centered on its part; a union's sits around the part's own origin, often off its center
     // (seen live: the Piranha's pieces)
     let origin: [f32; 3] = std::array::from_fn(|k| if union { 0.0 } else { (lo[k] + hi[k]) / 2.0 });
-    // world = R * local with R row-major (checked live against the game's popup, see `tr`)
-    // A union's mesh is stored turned the other way: its rotation applies transposed (live, version-4ea8e85481e34f46:
-    // only then did a Cod's union pieces face as the game's popup draws them; MeshParts face right as is).
-    let tr = union;
-    let turn = |l: [f32; 3]| -> [f32; 3] {
-        std::array::from_fn(|r| (0..3).map(|k| rot[if tr { r + 3 * k } else { 3 * r + k }] * l[k]).sum())
-    };
+    // world = R * local with R row-major, unions and MeshParts alike (checked live on a held Mastered Dunkleosteus: its
+    // 11 union pieces fit together only this way)
+    let turn = |l: [f32; 3]| -> [f32; 3] { std::array::from_fn(|r| (0..3).map(|k| rot[3 * r + k] * l[k]).sum()) };
     let world = |v: [f32; 3]| -> [f32; 3] {
         let w = turn(std::array::from_fn(|k| (v[k] - origin[k]) * scale[k]));
         std::array::from_fn(|r| w[r] + pos[r])
@@ -969,88 +1064,7 @@ impl GameReader {
             .iter()
             .any(|&c| instance_name(p, o, c).is_some_and(|n| n.ends_with("template")));
         let m: &dyn Memory = p;
-        let mut parts = Vec::new();
-        let mut meshes = Vec::new(); // (mesh id, rotation, position, size, paint)
-        let mut textures: Vec<String> = Vec::new(); // the MeshParts' TextureIDs; a Tri's tex is 1 + an index here
-        let mut boxes = Vec::new();
-        let mut solids = 0;
-        let mut stack = kids;
-        while let Some(c) = stack.pop() {
-            if solids >= 64 {
-                break; // plenty to average and draw; a huge model stays cheap
-            }
-            // every solid part kind: Piranha and Anomalocaris bodies are unions (PartOperation)
-            let class = instance_class(p, o, c);
-            if matches!(
-                class.as_deref(),
-                Some("Part" | "MeshPart" | "PartOperation" | "UnionOperation" | "WedgePart" | "CornerWedgePart")
-            ) {
-                let rgb = m.get::<[u8; 4]>(o.at(c, "BasePart.Color3")).unwrap_or_default();
-                let prim = m.get::<usize>(o.at(c, "BasePart.Primitive")).unwrap_or(0);
-                let rgb = u32::from_be_bytes([0, rgb[0], rgb[1], rgb[2]]);
-                let transparency = m.get::<f32>(o.at(c, "BasePart.Transparency")).unwrap_or(1.0);
-                let material = if prim == 0 {
-                    0
-                } else {
-                    m.get::<u16>(o.at(prim, "Primitive.Material")).unwrap_or(0)
-                };
-                solids += 1;
-                if recolored {
-                    parts.push((rgb, transparency, material));
-                }
-                // fully transparent parts (the Hitbox) aren't drawn by the game either
-                if transparency < 1.0
-                    && let Some(id) = part_mesh_id(m, o, c)
-                    && let Some((rot, pos, size)) = part_frame(m, o, c)
-                {
-                    let tex = mesh_texture(m, o, c).map_or(0, |t| {
-                        let i = textures.iter().position(|x| *x == t).unwrap_or_else(|| {
-                            textures.push(t);
-                            textures.len() - 1
-                        });
-                        i as u32 + 1
-                    });
-                    meshes.push((
-                        id,
-                        rot,
-                        pos,
-                        size,
-                        Tri {
-                            tex,
-                            ..material_look(rgb, material)
-                        },
-                    ));
-                } else if transparency < 1.0
-                    && matches!(class.as_deref(), Some("Part" | "WedgePart"))
-                    && let Some((rot, pos, size)) = part_frame(m, o, c)
-                {
-                    // an optional key: without it every plain Part is a block
-                    let shape = if class.as_deref() == Some("WedgePart") {
-                        3
-                    } else if o.values.contains_key("BasePart.Shape") {
-                        m.get::<u8>(o.at(c, "BasePart.Shape")).unwrap_or(1)
-                    } else {
-                        1
-                    };
-                    let (mesh, size) = shape_mesh(shape, size);
-                    boxes.extend(part_tris(mesh, false, &rot, pos, size, material_look(rgb, material)));
-                }
-            }
-            stack.extend(children(p, o, c));
-        }
-        let mut model = Vec::new();
-        if !meshes.is_empty() {
-            let ids: Vec<(u64, bool)> = meshes.iter().map(|x| x.0).collect();
-            let cache = cached_meshes(m, o, data_model(p, o), &ids);
-            for (id, rot, pos, size, paint) in &meshes {
-                if let Some(mesh) = cache.get(&id.0) {
-                    model.extend(part_tris(mesh, id.1, rot, *pos, *size, *paint));
-                }
-            }
-        }
-        if !model.is_empty() {
-            model.extend(boxes); // the eyes of a fish whose body was read; alone they are no picture
-        }
+        let (mut model, textures, parts) = model_tris(m, o, data_model(p, o), kids, recolored);
         let vp = child_by_name(p, o, fih, "vp");
         let (scene, eye, rot) = popup_view(m, o, vp, &model);
         for t in &mut model {
@@ -1318,8 +1332,8 @@ mod tests {
             [4.0, 2.0, 2.0],
             paint(0x123456, true),
         );
-        // turned the other way, as unions are: (12,0,0) -> (0,0,12)
-        assert_eq!(tris[0].p[2], [10.0, 20.0, 42.0]);
+        // turned: (12,0,0) -> (0,0,-12)
+        assert_eq!(tris[0].p[2], [10.0, 20.0, 18.0]);
     }
 
     #[test]
