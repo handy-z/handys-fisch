@@ -1,6 +1,7 @@
 use handy_sdk::ui::dashboard::Span;
 use handy_sdk::ui::theme::rgb;
 use handy_sdk::util::text::group_thousands;
+use handy_sdk::util::usage::Usage;
 use windows::Win32::Foundation::COLORREF;
 
 use crate::game::catch::{Catch, HUD_STROKE, LABEL_STROKE, Piece, catch_pieces, weather_effect};
@@ -49,6 +50,20 @@ pub fn catch_spans(fish: &Option<Catch>, popup: &str) -> Vec<Span> {
 }
 
 const MUTED: &str = "9a9a9a";
+
+/// What the app costs the machine, for the header's note: "CPU 0.4% · RAM 48 MB" over "GPU 0.0% · VRAM 0 MB"; "–"
+/// for what couldn't be read (CPU and GPU until a second sample).
+pub fn usage_text(u: &Usage) -> String {
+    let pct = |v: Option<f32>| v.map_or("–".into(), |v| format!("{v:.1}%"));
+    let mb = |v: Option<u64>| v.map_or("–".into(), |v| format!("{} MB", v >> 20));
+    format!(
+        "CPU {} · RAM {}\nGPU {} · VRAM {}",
+        pct(u.cpu),
+        mb(u.ram),
+        pct(u.gpu),
+        mb(u.vram)
+    )
+}
 
 /// A 0xRRGGBB color's hue in degrees, None when it is too grey to have a telling one.
 pub fn hue(rgb: u32) -> Option<f32> {
@@ -388,6 +403,13 @@ mod tests {
         assert_eq!(rarity_rgb("Legendary"), Some(0xf0b56d));
         assert_eq!(rarity_rgb("Exotic"), Some(0xff8080)); // a gradient's first color
         assert_eq!(rarity_rgb("Nope"), None);
+        let u = Usage {
+            cpu: Some(0.42),
+            ram: Some(48 << 20),
+            gpu: None,
+            vram: Some(0),
+        };
+        assert_eq!(usage_text(&u), "CPU 0.4% · RAM 48 MB\nGPU – · VRAM 0 MB");
         // the Mythical relic's glyph turned blue to violet in 1.5 s (read live)
         let (a, b) = (hue(0x3e44ff).unwrap(), hue(0x8b3eff).unwrap());
         assert!((237.5..238.5).contains(&a) && (263.5..264.5).contains(&b), "{a} {b}");

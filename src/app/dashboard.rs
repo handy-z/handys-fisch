@@ -17,13 +17,15 @@ use handy_sdk::ui::dashboard::{Dashboard, Span, Spec, check, page, rich_value, s
 use handy_sdk::ui::overlay::StatusOverlay;
 use handy_sdk::ui::raster::{Scene, Texture, Tri, aura, render};
 use handy_sdk::util::paths::app_data_dir;
+use handy_sdk::util::usage::UsageMeter;
 use windows::Win32::UI::WindowsAndMessaging::SHOW_WINDOW_CMD;
 
 use super::config::SettingsStore;
 use super::fish_pictures::FishPictures;
 use super::view::{
     bestiary_color, boost_spans, catch_spans, coin_spans, earned_spans, gps_text, hms, hue_shift, lifetime_spans,
-    overlay_text, per_hour, rarity_rgb, save_warning, spans, styled, tally_spans, time_text, weather_spans, xp_spans,
+    overlay_text, per_hour, rarity_rgb, save_warning, spans, styled, tally_spans, time_text, usage_text, weather_spans,
+    xp_spans,
 };
 use crate::game::catch::{Catch, LABEL_STROKE, bait_ability, bait_stats, rod_pieces, rod_stat_pieces, rod_stats};
 use crate::r#macro::bot::{Bot, earned, release_inputs};
@@ -86,6 +88,7 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
     // each card's model's textures in its order, kept while the model and the textures loaded stay the same
     let card_textures: RefCell<HashMap<i32, CardTextures>> = RefCell::new(HashMap::new());
     let started = Instant::now(); // the shimmer's clock
+    let meter = RefCell::new(UsageMeter::new()); // what the app costs the machine, in the header
     let textures: RefCell<HashMap<String, Texture>> = RefCell::new(HashMap::new()); // by asset, once downloaded
     let session_due = Cell::new(Instant::now()); // when the time fishing and the /h rates refresh next
     let rates = RefCell::new((String::new(), String::new(), String::new())); // catches, value, xp
@@ -446,6 +449,7 @@ Fisch {}",
             // Rates use only what was gained while auto fish was on, over the time it was fishing.
             let ms = bot.active_ms.load(SeqCst);
             ui.set_text(ID_TIME, &hms(ms));
+            ui.set_header_note(&usage_text(&meter.borrow_mut().sample()));
             *r = (
                 per_hour(i64::from(bot.macro_caught.load(SeqCst)), ms),
                 per_hour(earned_on, ms),
