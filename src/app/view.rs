@@ -1,4 +1,5 @@
 use handy_sdk::ui::dashboard::Span;
+use handy_sdk::ui::raster::Texture;
 use handy_sdk::ui::theme::rgb;
 use handy_sdk::util::text::group_thousands;
 use handy_sdk::util::usage::Usage;
@@ -50,6 +51,57 @@ pub fn catch_spans(fish: &Option<Catch>, popup: &str) -> Vec<Span> {
 }
 
 const MUTED: &str = "9a9a9a";
+
+/// A world condition's icon on the wiki, the game's own art ("File:Aurora_Borealis.png", "File:ShinySurge.png"); None
+/// for a condition it has none for (the app's own "Meteor" and "Blizzard").
+pub fn condition_icon(name: &str) -> Option<String> {
+    // the wiki writes the modifiers' files without spaces, the weathers' and seasons' with underscores
+    const MODIFIERS: [&str; 3] = ["Shiny Surge", "Mutation Surge", "Night of the Fireflies"];
+    match name {
+        "" | "Meteor" | "Blizzard" => None,
+        "Day of the Luminous" | "Night of the Luminous" => Some("File:NightoftheLuminous.png".into()),
+        _ if MODIFIERS.contains(&name) => Some(format!("File:{}.png", name.replace(' ', ""))),
+        _ => Some(format!("File:{}.png", name.replace(' ', "_"))),
+    }
+}
+
+/// The icons for the Conditions rows: the weathers; Day/Night and the season; the events.
+pub fn condition_icons(w: &World) -> [Vec<String>; 3] {
+    let icons = |names: &[&String]| names.iter().filter_map(|n| condition_icon(n)).collect();
+    [
+        icons(&w.weather.iter().collect::<Vec<_>>()),
+        icons(&[&w.cycle, &w.season]),
+        icons(&w.events.iter().collect::<Vec<_>>()),
+    ]
+}
+
+/// Square icons side by side from the left, each the strip's height (or less, so all fit), vertically centered, as
+/// premultiplied BGRA w x h.
+pub fn icon_strip(icons: &[Texture], w: u32, h: u32) -> Vec<u8> {
+    let (w, h) = (w as usize, h as usize);
+    let mut out = vec![0u8; w * h * 4];
+    let n = icons.len();
+    if n == 0 || w == 0 || h == 0 {
+        return out;
+    }
+    let gap = h / 5;
+    let side = h.min((w + gap) / n - gap.min((w + gap) / n));
+    let top = (h - side) / 2;
+    for (k, icon) in icons.iter().enumerate() {
+        let left = k * (side + gap);
+        for y in 0..side {
+            for x in 0..side {
+                let [r, g, b, a] = icon.sample((x as f32 + 0.5) / side as f32, (y as f32 + 0.5) / side as f32);
+                let o = ((top + y) * w + left + x) * 4;
+                if o + 4 <= out.len() && left + x < w {
+                    let byte = |v: f32| (v * a * 255.0).round().clamp(0.0, 255.0) as u8;
+                    out[o..o + 4].copy_from_slice(&[byte(b), byte(g), byte(r), (a * 255.0).round() as u8]);
+                }
+            }
+        }
+    }
+    out
+}
 
 /// What the app costs the machine, for the title bar: "CPU 0.4% · GPU 0.0% · RAM 48 MB"; "–" for what couldn't be
 /// read (CPU and GPU until a second sample).
@@ -397,6 +449,30 @@ mod tests {
         assert_eq!(rarity_rgb("Legendary"), Some(0xf0b56d));
         assert_eq!(rarity_rgb("Exotic"), Some(0xff8080)); // a gradient's first color
         assert_eq!(rarity_rgb("Nope"), None);
+        // the wiki's file names: weathers and seasons with underscores, modifiers without spaces
+        assert_eq!(
+            condition_icon("Aurora Borealis").as_deref(),
+            Some("File:Aurora_Borealis.png")
+        );
+        assert_eq!(condition_icon("Shiny Surge").as_deref(), Some("File:ShinySurge.png"));
+        assert_eq!(condition_icon("Night").as_deref(), Some("File:Night.png"));
+        assert_eq!(condition_icon("Meteor"), None);
+        let icons = condition_icons(&w);
+        assert_eq!(icons[0], ["File:Windy.png", "File:Aurora_Borealis.png"]);
+        assert_eq!(icons[1], ["File:Night.png", "File:Winter.png"]);
+        assert!(icons[2].is_empty()); // the Meteor has no icon
+        // two opaque red icons in a 30 x 10 strip: 10 x 10 each with a 2 px gap, the rest clear
+        let red = Texture {
+            w: 1,
+            h: 1,
+            rgba: vec![255, 0, 0, 255],
+        };
+        let strip = icon_strip(&[red.clone(), red], 30, 10);
+        let at = |x: usize, y: usize| &strip[(y * 30 + x) * 4..(y * 30 + x) * 4 + 4];
+        assert_eq!(at(0, 0), [0, 0, 255, 255]); // BGRA
+        assert_eq!(at(10, 5), [0; 4]); // the gap
+        assert_eq!(at(12, 5), [0, 0, 255, 255]);
+        assert_eq!(at(25, 5), [0; 4]);
         let u = Usage {
             cpu: Some(0.42),
             ram: Some(48 << 20),

@@ -23,9 +23,9 @@ use windows::Win32::UI::WindowsAndMessaging::SHOW_WINDOW_CMD;
 use super::config::SettingsStore;
 use super::fish_pictures::FishPictures;
 use super::view::{
-    bestiary_color, boost_spans, catch_spans, coin_spans, earned_spans, gps_text, hms, hue_shift, lifetime_spans,
-    overlay_text, per_hour, rarity_rgb, save_warning, spans, styled, tally_spans, time_text, usage_text, weather_spans,
-    xp_spans,
+    bestiary_color, boost_spans, catch_spans, coin_spans, condition_icons, earned_spans, gps_text, hms, hue_shift,
+    icon_strip, lifetime_spans, overlay_text, per_hour, rarity_rgb, save_warning, spans, styled, tally_spans,
+    time_text, usage_text, weather_spans, xp_spans,
 };
 use crate::game::catch::{Catch, LABEL_STROKE, bait_ability, bait_stats, rod_pieces, rod_stat_pieces, rod_stats};
 use crate::r#macro::bot::{Bot, earned, release_inputs};
@@ -66,6 +66,7 @@ const ID_DAYTIME: i32 = 21;
 const ID_BOOSTS: i32 = 22;
 const ID_TALLY: i32 = 23;
 const ID_EARNED_FILTER: i32 = 24;
+const CONDITION_ICONS_DIP: i32 = 76; // three icons a row
 /// What a fish card last drew: its model, size, textures loaded and shimmer frame.
 type DrawKey = (usize, u32, u32, usize, u128);
 /// A card's model's textures in its order, for (model, textures loaded).
@@ -88,6 +89,7 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
     // each card's model's textures in its order, kept while the model and the textures loaded stay the same
     let card_textures: RefCell<HashMap<i32, CardTextures>> = RefCell::new(HashMap::new());
     let started = Instant::now(); // the shimmer's clock
+    let icons_drawn: RefCell<HashMap<i32, (String, usize, u32, u32)>> = RefCell::new(HashMap::new()); // per row
     let meter = RefCell::new(UsageMeter::new()); // what the app costs the machine, in the title bar
     let textures: RefCell<HashMap<String, Texture>> = RefCell::new(HashMap::new()); // by asset, once downloaded
     let session_due = Cell::new(Instant::now()); // when the time fishing and the /h rates refresh next
@@ -134,9 +136,10 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             // its own page: on Fishing and Player it made the window taller than the screen
             page("World"),
             section("Conditions"), // the server's, from ReplicatedStorage/world
-            rich_value(ID_WEATHER, "Weather").lines(2),
-            value(ID_DAYTIME, "Time"),
-            rich_value(ID_BOOSTS, "Boosts"),
+            // each with the game's icons for it (the wiki's copies), as the HUD shows them by the minimap
+            rich_value(ID_WEATHER, "Weather").lines(2).picture(CONDITION_ICONS_DIP),
+            value(ID_DAYTIME, "Time").picture(CONDITION_ICONS_DIP),
+            rich_value(ID_BOOSTS, "Boosts").picture(CONDITION_ICONS_DIP),
             section("Location"),
             rich_value(ID_LOCATION, "Zone").lines(2),
             page("Settings"),
@@ -188,6 +191,30 @@ Fisch {}",
         ui.set_spans(ID_WEATHER, &weather_spans(&v.world));
         ui.set_text(ID_DAYTIME, &time_text(&v.world));
         ui.set_spans(ID_BOOSTS, &boost_spans(&v.world));
+        for (id, names) in [ID_WEATHER, ID_DAYTIME, ID_BOOSTS]
+            .into_iter()
+            .zip(condition_icons(&v.world))
+        {
+            let Some((w, h)) = ui.picture_size(id).filter(|_| ui.picture_visible(id)) else {
+                continue;
+            };
+            // downloaded like the fish pictures; each that arrives redraws the row once
+            let mut cache = textures.borrow_mut();
+            for n in &names {
+                if !cache.contains_key(n) {
+                    let file = pictures.get(n);
+                    if !file.as_os_str().is_empty() {
+                        cache.insert(n.clone(), load_texture(&file).unwrap_or_default());
+                    }
+                }
+            }
+            let loaded: Vec<Texture> = names.iter().filter_map(|n| cache.get(n).cloned()).collect();
+            let key = (names.join("|"), loaded.len(), w, h);
+            if icons_drawn.borrow().get(&id) != Some(&key) {
+                ui.set_picture_pixels(id, w, h, &icon_strip(&loaded, w, h));
+                icons_drawn.borrow_mut().insert(id, key);
+            }
+        }
         ui.set_spans(
             ID_TALLY,
             &tally_spans(
