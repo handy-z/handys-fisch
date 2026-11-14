@@ -689,6 +689,8 @@ pub struct GameReader {
     bestiary: Option<CachedPath>,
     rs_world: CachedPath, // ReplicatedStorage/world, from the DataModel
     world_kids: NamedKids,
+    owner_kids: NamedKids,    // stats_owner's: Stats, Settings, ...
+    settings_kids: NamedKids, // its Settings
     weather_kids: NamedKids,
 }
 
@@ -735,6 +737,8 @@ impl GameReader {
             bestiary: None,
             rs_world: CachedPath::new(&["ReplicatedStorage", "world"]),
             world_kids: NamedKids::default(),
+            owner_kids: NamedKids::default(),
+            settings_kids: NamedKids::default(),
             weather_kids: NamedKids::default(),
         }
     }
@@ -958,6 +962,28 @@ impl GameReader {
         );
         info.bestiary = gui_text(p, o, row).unwrap_or_default();
         Some(info)
+    }
+
+    /// The game's Sell All filters, from the player's Settings (Stats' sibling): willautosell_<rarity> as
+    /// ("legendary", sells); None when unreadable. Only the higher rarities have one; ~16 reads.
+    pub fn sell_filter(&mut self) -> Option<HashMap<String, bool>> {
+        if !self.resolve_player() || self.stats() == 0 {
+            return None;
+        }
+        let sess = self.sess.clone();
+        let (p, o) = (&sess.proc, &sess.offsets);
+        let m: &dyn Memory = p;
+        let settings = *self.owner_kids.refresh(p, o, self.stats_owner).get("Settings")?;
+        let filter: HashMap<String, bool> = self
+            .settings_kids
+            .refresh(p, o, settings)
+            .iter()
+            .filter_map(|(n, c)| {
+                let rarity = n.strip_prefix("willautosell_")?;
+                Some((rarity.to_owned(), m.get::<u8>(o.at(*c, "Misc.Value"))? != 0))
+            })
+            .collect();
+        (!filter.is_empty()).then_some(filter)
     }
 
     /// Weather, time, season, events and server boosts (ReplicatedStorage/world); ~40 reads.

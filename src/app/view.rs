@@ -266,8 +266,14 @@ pub fn coin_spans(coins: &str) -> Vec<Span> {
     vec![game_span(coins.into(), COINS, true, false, HUD_STROKE)]
 }
 
-/// "≈ 13,391 C$" like the HUD's coins, then the rate plain on a second line (a dashboard tile's small line).
-pub fn earned_spans(value: i64, rate: &str) -> Vec<Span> {
+/// "≈ 13,391 C$" like the HUD's coins, then the rate plain on a second line (a dashboard tile's small line). `kept`:
+/// how many catches the game's Sell All filters keep, when they could be read (value is then the sellable part only).
+pub fn earned_spans(value: i64, rate: &str, kept: Option<i32>) -> Vec<Span> {
+    let filtered = match kept {
+        None => String::new(),
+        Some(0) => " · sellable".into(),
+        Some(k) => format!(" · sellable · {k} kept"),
+    };
     vec![
         game_span(
             format!("≈ {} C$", group_thousands(value)),
@@ -276,7 +282,7 @@ pub fn earned_spans(value: i64, rate: &str) -> Vec<Span> {
             false,
             HUD_STROKE,
         ),
-        Span::plain(&format!("\n{rate}")),
+        Span::plain(&format!("\n{rate}{filtered}")),
     ]
 }
 
@@ -519,7 +525,9 @@ mod tests {
             }]
         );
         assert_eq!(coin_spans(""), vec![Span::plain("–")]);
-        let earned = earned_spans(13391, "94,893/h");
+        assert_eq!(earned_spans(1, "–/h", Some(3))[1].text, "\n–/h · sellable · 3 kept");
+        assert_eq!(earned_spans(1, "–/h", Some(0))[1].text, "\n–/h · sellable");
+        let earned = earned_spans(13391, "94,893/h", None);
         assert!(
             earned.len() == 2 && earned[0].text == "≈ 13,391 C$" && !earned[0].italic && earned[1].text == "\n94,893/h"
         );

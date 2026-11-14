@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering::{Relaxed, SeqCst};
@@ -546,6 +546,25 @@ fn hue_rate(a: u32, b: u32, secs: f32) -> f32 {
     if rate.abs() < 3.0 { 0.0 } else { rate }
 }
 
+/// Whether the game's Sell All sells a catch of `rarity` under `filter` (sell_filter): the rarity's own switch, else
+/// sold (the lower rarities have none).
+// shortcut: Divine Secret and Limited have no switch of their own; they follow Secret and Event, a guess from the names
+fn sells(filter: &HashMap<String, bool>, rarity: &str) -> bool {
+    let key: String = rarity
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect::<String>()
+        .to_lowercase();
+    let key = if key.contains("secret") {
+        "secret"
+    } else if key.starts_with("limited") {
+        "event"
+    } else {
+        key.as_str()
+    };
+    filter.get(key).copied().unwrap_or(true)
+}
+
 fn rarest_model_file(catch_log: &Path) -> PathBuf {
     catch_log.with_file_name("rarest_model.bin")
 }
@@ -590,6 +609,10 @@ pub struct Bot {
     pub macro_caught: AtomicI32,
     /// this session: estimated C$ of the fish caught, XP given
     pub caught_value: AtomicI64,
+    /// catches this session the game's Sell All filters keep (left out of caught_value); with sell_filter_read, whether
+    /// those filters could be read (else every catch counts)
+    pub kept: AtomicI32,
+    pub sell_filter_read: AtomicBool,
     pub xp_gained: AtomicI64,
     /// the part caught while auto fish was on (for the rates)
     pub macro_value: AtomicI64,
@@ -633,6 +656,7 @@ struct Engine<'a> {
     bot: &'a Bot,
     toggle: KeyPoller,
     rarest_odds: i32,
+    sell_filter: Option<HashMap<String, bool>>, // the game's Sell All filters (GameReader::sell_filter), once read
     held: bool,
     nav: bool,
     reeling: bool,
@@ -682,6 +706,8 @@ impl Bot {
             best_streak: AtomicI32::new(0),
             macro_caught: AtomicI32::new(0),
             caught_value: AtomicI64::new(0),
+            kept: AtomicI32::new(0),
+            sell_filter_read: AtomicBool::new(false),
             xp_gained: AtomicI64::new(0),
             macro_value: AtomicI64::new(0),
             macro_xp: AtomicI64::new(0),
@@ -721,6 +747,7 @@ impl Bot {
             bot: self,
             toggle: KeyPoller::default(),
             rarest_odds: 0,
+            sell_filter: None,
             held: false,
             nav: false,
             reeling: false,
@@ -867,7 +894,19 @@ impl Engine<'_> {
         bot.best_streak.store(bot.best_streak.load(SeqCst).max(streak), SeqCst);
         self.lost_streak = 0;
         let c = parse_catch(text);
-        let value = c.as_ref().and_then(|c| c.value).map_or(0, |v| v as i64);
+        // only what the game's Sell All would sell counts as earned
+        let sold = match (&self.sell_filter, &c) {
+            (Some(f), Some(c)) => sells(f, &c.rarity),
+            _ => true,
+        };
+        if !sold {
+            bot.kept.fetch_add(1, SeqCst);
+        }
+        let value = c
+            .as_ref()
+            .and_then(|c| c.value)
+            .filter(|_| sold)
+            .map_or(0, |v| v as i64);
         bot.caught_value.fetch_add(value, SeqCst);
         if bot.on.load(SeqCst) {
             bot.macro_value.fetch_add(value, SeqCst);
@@ -1236,6 +1275,10 @@ impl Engine<'_> {
                     if let Some(w) = r.world() {
                         bot.view.lock().unwrap().world = w;
                     }
+                    if let Some(f) = r.sell_filter() {
+                        self.sell_filter = Some(f);
+                        bot.sell_filter_read.store(true, SeqCst);
+                    }
                 }
             }
             if let Some((_, at, _)) = &pending_catch {
@@ -1388,6 +1431,22 @@ impl Engine<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bot_sells_by_the_games_filters() {
+        // as read live: every rarity switch off (kept) but treasure maps
+        let f: HashMap<String, bool> = [
+            ("legendary", false),
+            ("mythical", false),
+            ("secret", false),
+            ("event", true),
+        ]
+        .map(|(k, v)| (k.to_owned(), v))
+        .into();
+        assert!(!sells(&f, "Legendary") && !sells(&f, "Mythical"));
+        assert!(sells(&f, "Common") && sells(&f, "Uncommon") && sells(&f, "")); // no switch: always sold
+        assert!(!sells(&f, "Divine Secret") && sells(&f, "Limited+")); // following Secret and Event
+    }
 
     #[test]
     fn bot_measures_a_turning_hue() {

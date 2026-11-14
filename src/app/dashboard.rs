@@ -440,7 +440,8 @@ Fisch {}",
                 per_hour(bot.macro_xp.load(SeqCst), ms),
             );
         }
-        ui.set_spans(ID_EARNED, &earned_spans(bot.caught_value.load(SeqCst), &r.1));
+        let kept = bot.sell_filter_read.load(SeqCst).then(|| bot.kept.load(SeqCst));
+        ui.set_spans(ID_EARNED, &earned_spans(bot.caught_value.load(SeqCst), &r.1, kept));
         ui.set_spans(ID_XP, &xp_spans(bot.xp_gained.load(SeqCst), &r.2));
         let (streak, best) = (bot.streak.load(SeqCst), bot.best_streak.load(SeqCst));
         let best = if best > streak {
