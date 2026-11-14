@@ -15,7 +15,7 @@ use handy_sdk::ui::d2d::add_font_file;
 use handy_sdk::ui::d2d::load_texture;
 use handy_sdk::ui::dashboard::{Dashboard, Span, Spec, check, page, rich_value, section, tile, value};
 use handy_sdk::ui::overlay::StatusOverlay;
-use handy_sdk::ui::raster::{Texture, render};
+use handy_sdk::ui::raster::{Scene, Texture, aura, render};
 use handy_sdk::util::paths::app_data_dir;
 use windows::Win32::UI::WindowsAndMessaging::SHOW_WINDOW_CMD;
 
@@ -23,7 +23,7 @@ use super::config::SettingsStore;
 use super::fish_pictures::FishPictures;
 use super::view::{
     bestiary_color, boost_spans, catch_spans, coin_spans, earned_spans, gps_text, hms, lifetime_spans, overlay_text,
-    per_hour, save_warning, spans, styled, tally_spans, time_text, weather_spans, xp_spans,
+    per_hour, rarity_rgb, save_warning, spans, styled, tally_spans, time_text, weather_spans, xp_spans,
 };
 use crate::game::catch::{Catch, LABEL_STROKE, bait_ability, bait_stats, rod_pieces, rod_stat_pieces, rod_stats};
 use crate::r#macro::bot::{Bot, release_inputs};
@@ -63,6 +63,11 @@ const ID_WEATHER: i32 = 20;
 const ID_DAYTIME: i32 = 21;
 const ID_BOOSTS: i32 = 22;
 const ID_TALLY: i32 = 23;
+/// What a fish card last drew: its model, size, textures loaded and shimmer frame.
+type DrawKey = (usize, u32, u32, usize, u128);
+/// A card's model's textures in its order, for (model, textures loaded).
+type CardTextures = ((usize, usize), Vec<Texture>);
+const SHIMMER_FPS: u128 = 10; // a rippling ForceField's redraws per second: smooth enough, ~10 renders a second at most
 
 /// Shows the dashboard and the "auto fish: on/off" overlay until the window is closed. The first close lets the bot
 /// finish the fish (up to 3 min); a second close is immediate. UI thread only, one at a time.
@@ -76,7 +81,10 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
     let bot = deps.bot;
     let roblox_pid = Cell::new(0u32);
     // what each fish card last drew (model, size, textures loaded): the picture is still, so it's drawn once
-    let drawn: RefCell<HashMap<i32, (usize, u32, u32, usize)>> = RefCell::new(HashMap::new());
+    let drawn: RefCell<HashMap<i32, DrawKey>> = RefCell::new(HashMap::new());
+    // each card's model's textures in its order, kept while the model and the textures loaded stay the same
+    let card_textures: RefCell<HashMap<i32, CardTextures>> = RefCell::new(HashMap::new());
+    let started = Instant::now(); // the shimmer's clock
     let textures: RefCell<HashMap<String, Texture>> = RefCell::new(HashMap::new()); // by asset, once downloaded
     let session_due = Cell::new(Instant::now()); // when the time fishing and the /h rates refresh next
     let rates = RefCell::new((String::new(), String::new(), String::new())); // catches, value, xp
@@ -356,14 +364,32 @@ Fisch {}",
                         }
                     }
                     let loaded = model.textures.iter().filter(|t| cache.contains_key(*t)).count();
-                    let key = (Arc::as_ptr(model) as usize, w, h, loaded);
+                    // a ForceField ripples: redraw it SHIMMER_FPS times a second, a still model once
+                    let shimmer = model.tris.iter().any(|t| t.shimmer);
+                    let elapsed = started.elapsed();
+                    let frame = if shimmer {
+                        elapsed.as_millis() * SHIMMER_FPS / 1000
+                    } else {
+                        0
+                    };
+                    let key = (Arc::as_ptr(model) as usize, w, h, loaded, frame);
                     if drawn.borrow().get(&id) != Some(&key) {
-                        let tex: Vec<Texture> = model
-                            .textures
-                            .iter()
-                            .map(|t| cache.get(t).cloned().unwrap_or_default())
-                            .collect();
-                        ui.set_picture_pixels(id, w, h, &render(&model.tris, &tex, &model.scene, w, h));
+                        let mut maps = card_textures.borrow_mut();
+                        let made = maps.get(&id).is_some_and(|(k, _)| *k == (key.0, loaded));
+                        if !made {
+                            let tex = model.textures.iter().map(|t| cache.get(t).cloned().unwrap_or_default());
+                            maps.insert(id, ((key.0, loaded), tex.collect()));
+                        }
+                        let scene = Scene {
+                            time: elapsed.as_secs_f32(),
+                            ..model.scene
+                        };
+                        let mut px = render(&model.tris, &maps[&id].1, &scene, w, h);
+                        // the popup's rays behind the fish are in its rarity's color
+                        if let Some(rgb) = fish.as_ref().and_then(|f| rarity_rgb(&f.rarity)) {
+                            aura(&mut px, w, h, rgb);
+                        }
+                        ui.set_picture_pixels(id, w, h, &px);
                         drawn.borrow_mut().insert(id, key);
                     }
                 }

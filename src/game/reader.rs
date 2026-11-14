@@ -100,7 +100,7 @@ fn model_tris(
                     size,
                     Tri {
                         tex,
-                        ..material_look(rgb, material)
+                        ..material_look(rgb, material, transparency)
                     },
                 ));
             } else if transparency < 1.0
@@ -116,7 +116,14 @@ fn model_tris(
                     1
                 };
                 let (mesh, size) = shape_mesh(shape, size);
-                boxes.extend(part_tris(mesh, false, &rot, pos, size, material_look(rgb, material)));
+                boxes.extend(part_tris(
+                    mesh,
+                    false,
+                    &rot,
+                    pos,
+                    size,
+                    material_look(rgb, material, transparency),
+                ));
             }
         }
         stack.extend(children(p, o, c));
@@ -210,40 +217,68 @@ fn to_camera(t: &Tri, eye: [f32; 3], rot: &[f32; 9]) -> Tri {
 }
 
 // Roblox Material enum values (as Primitive.Material holds them)
+const PLASTIC: u16 = 256;
+const SMOOTH_PLASTIC: u16 = 272;
+const MARBLE: u16 = 784;
+const CORRODED_METAL: u16 = 1040;
+const DIAMOND_PLATE: u16 = 1056;
+const FOIL: u16 = 1072;
+const METAL: u16 = 1088;
 const ICE: u16 = 1536;
 const GLACIER: u16 = 1552;
 const GLASS: u16 = 1568;
 const FORCE_FIELD: u16 = 1584;
+const FORCE_FIELD_CLEAR: f32 = 0.85; // how much a ForceField lets through: the game's is a faint speckle
 
-/// How a part of color `rgb` is painted, as Roblox draws its material: Neon glows, ForceField is a faint see-through
-/// shimmer of a lighter color, Ice and Glacier a little frosted, Glass a little paler; the rest as is.
-fn material_look(rgb: u32, material: u16) -> Tri {
+/// How a part of color `rgb`, its material and Transparency is painted, as Roblox draws them: Neon glows, ForceField
+/// is a faint rippling see-through speckle, Ice and Glacier glossy, Glass
+/// paler and glossy, metals and smooth plastic with a glint; the part's own Transparency on top.
+fn material_look(rgb: u32, material: u16, transparency: f32) -> Tri {
     let mix = |to: [f32; 3], k: f32| {
         let c = [16, 8, 0].map(|s| ((rgb >> s) & 0xff) as f32);
         let m: [u32; 3] = std::array::from_fn(|i| (c[i] + (to[i] - c[i]) * k).round() as u32);
         (m[0] << 16) | (m[1] << 8) | m[2]
     };
-    let (rgb, glow, see_through) = match material {
-        NEON => (rgb, true, false),
-        FORCE_FIELD => (mix([255.0; 3], 0.25), false, true),
-        ICE | GLACIER => (mix([205.0, 225.0, 245.0], 0.15), false, false), // the game keeps them dark
-        GLASS => (mix([255.0; 3], 0.2), false, false),
-        _ => (rgb, false, false),
-    };
-    Tri {
-        rgb,
-        glow,
-        see_through,
-        ..Tri::default()
+    let mut t = Tri { rgb, ..Tri::default() };
+    match material {
+        NEON => t.glow = true,
+        FORCE_FIELD => {
+            t.clear = FORCE_FIELD_CLEAR;
+            t.shimmer = true;
+        }
+        ICE | GLACIER => t.shine = 0.7, // the game keeps their color: only the gloss shows
+        GLASS => {
+            t.rgb = mix([255.0; 3], 0.2);
+            t.shine = 0.9;
+        }
+        METAL | DIAMOND_PLATE | FOIL => t.shine = 0.6,
+        CORRODED_METAL | MARBLE => t.shine = 0.25,
+        SMOOTH_PLASTIC => t.shine = 0.25,
+        PLASTIC => t.shine = 0.1,
+        _ => {}
     }
+    // both let light through: what passes one passes the other
+    let part = transparency.clamp(0.0, 1.0);
+    t.clear = 1.0 - (1.0 - t.clear) * (1.0 - part);
+    t
 }
 
-/// A MeshPart's TextureID ("rbxassetid://1"), when it has one.
+/// A MeshPart's texture: its SurfaceAppearance's ColorMap when it has one (that replaces the TextureID in Roblox),
+/// else its TextureID ("rbxassetid://1"); None without either.
 fn mesh_texture(m: &dyn Memory, o: &Offsets, part: usize) -> Option<String> {
     if !o.values.contains_key("MeshPart.Texture") || instance_class(m, o, part).as_deref() != Some("MeshPart") {
         return None;
     }
-    read_string(m, o, o.at(part, "MeshPart.Texture")).filter(|t| asset_id(t).is_some())
+    let content = |at: usize| read_string(m, o, at).filter(|t| asset_id(t).is_some());
+    if o.values.contains_key("SurfaceAppearance.ColorMap")
+        && let Some(sa) = children(m, o, part)
+            .into_iter()
+            .find(|c| instance_class(m, o, *c).as_deref() == Some("SurfaceAppearance"))
+        && let Some(map) = content(o.at(sa, "SurfaceAppearance.ColorMap"))
+    {
+        return Some(map);
+    }
+    content(o.at(part, "MeshPart.Texture"))
 }
 
 /// A unit cube, for plain Parts.
@@ -268,6 +303,7 @@ static BLOCK: LazyLock<Mesh> = LazyLock::new(|| Mesh {
     .to_vec(),
     normals: Vec::new(),
     uvs: Vec::new(),
+    colors: Vec::new(),
 });
 
 /// A unit-diameter UV sphere with smooth normals, for Ball Parts.
@@ -298,6 +334,7 @@ static BALL: LazyLock<Mesh> = LazyLock::new(|| {
         positions,
         normals,
         uvs: Vec::new(),
+        colors: Vec::new(),
         tris,
     }
 });
@@ -330,6 +367,7 @@ static CYLINDER: LazyLock<Mesh> = LazyLock::new(|| {
         positions,
         normals,
         uvs: Vec::new(),
+        colors: Vec::new(),
         tris,
     }
 });
@@ -347,6 +385,7 @@ static WEDGE: LazyLock<Mesh> = LazyLock::new(|| Mesh {
     ],
     normals: Vec::new(),
     uvs: Vec::new(),
+    colors: Vec::new(),
     tris: vec![
         [0, 1, 3],
         [0, 3, 2], // bottom
@@ -408,6 +447,7 @@ fn part_tris(mesh: &Mesh, union: bool, rot: &[f32; 9], pos: [f32; 3], size: [f32
     };
     let corner = |i: u32| mesh.positions.get(i as usize).map(|&v| world(v));
     let uv = |i: u32| mesh.uvs.get(i as usize).copied().unwrap_or_default();
+    let vc = |i: u32| mesh.colors.get(i as usize).copied().unwrap_or_default(); // none: alpha 0, drawn white
     mesh.tris
         .iter()
         .filter_map(|t| {
@@ -415,6 +455,7 @@ fn part_tris(mesh: &Mesh, union: bool, rot: &[f32; 9], pos: [f32; 3], size: [f32
                 p: [corner(t[0])?, corner(t[1])?, corner(t[2])?],
                 n: t.map(normal),
                 uv: t.map(uv),
+                vc: t.map(vc),
                 tex: if mesh.uvs.is_empty() { 0 } else { paint.tex },
                 ..paint
             })
@@ -1278,6 +1319,7 @@ mod tests {
             positions: vec![[4.0, -1.0, -1.0], [6.0, 1.0, 1.0], [6.0, 0.0, 0.0]],
             normals: vec![[1.0, 0.0, 0.0], [0.0, 1.0, 1.0], [0.0; 3]],
             uvs: vec![[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]],
+            colors: Vec::new(),
             tris: vec![[0, 1, 2], [0, 1, 9]], // the second points past the vertices: dropped
         };
         let rot = [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0];
@@ -1491,5 +1533,215 @@ mod tests {
         if let Some(pi) = r.player_info() {
             println!("  rod='{}' rod_stats={:?}", pi.rod, pi.rod_stats);
         }
+    }
+}
+
+// Live tuning aid, read-only (memory reads and a screen copy, never input): at the next catch, the game popup's
+// picture beside the app's, as BMPs in HANDY_PROBE_DIR (default: the temp dir), and what the model's parts are made of.
+// Run: set HANDY_PROBE_DIR, then `cargo test --lib live_compare_popup -- --ignored --nocapture`, and catch a fish with
+// the Roblox window uncovered.
+#[cfg(test)]
+mod live_compare {
+    use super::*;
+
+    /// Premultiplied BGRA over a mid grey (the dashboard's card), as a 32-bit BMP.
+    fn bmp(path: &std::path::Path, w: u32, h: u32, bgra: &[u8]) {
+        let mut b = Vec::new();
+        b.extend(b"BM");
+        for v in [54 + w * h * 4, 0, 54, 40] {
+            b.extend(v.to_le_bytes());
+        }
+        b.extend((w as i32).to_le_bytes());
+        b.extend((-(h as i32)).to_le_bytes()); // top-down
+        b.extend(1u16.to_le_bytes());
+        b.extend(32u16.to_le_bytes());
+        for v in [0u32, w * h * 4, 2835, 2835, 0, 0] {
+            b.extend(v.to_le_bytes());
+        }
+        for p in bgra.chunks(4) {
+            let a = u32::from(p[3]);
+            for c in &p[..3] {
+                b.push((u32::from(*c) + 0x2b * (255 - a) / 255) as u8);
+            }
+            b.push(255);
+        }
+        std::fs::write(path, b).unwrap();
+    }
+
+    /// The screen's pixels in a rect (physical pixels), as BGRA.
+    fn screen(x: i32, y: i32, w: i32, h: i32) -> Vec<u8> {
+        use windows::Win32::Graphics::Gdi::*;
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        unsafe {
+            let dc = GetDC(None);
+            let mem = CreateCompatibleDC(Some(dc));
+            let bm = CreateCompatibleBitmap(dc, w, h);
+            let old = SelectObject(mem, bm.into());
+            let _ = BitBlt(mem, 0, 0, w, h, Some(dc), x, y, SRCCOPY);
+            let mut bi = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: w,
+                    biHeight: -h,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            GetDIBits(
+                mem,
+                bm,
+                0,
+                h as u32,
+                Some(px.as_mut_ptr().cast()),
+                &mut bi,
+                DIB_RGB_COLORS,
+            );
+            SelectObject(mem, old);
+            let _ = DeleteObject(bm.into());
+            let _ = DeleteDC(mem);
+            ReleaseDC(None, dc);
+        }
+        for p in px.chunks_mut(4) {
+            p[3] = 255;
+        }
+        px
+    }
+
+    #[test]
+    #[ignore]
+    fn live_compare_popup() {
+        use handy_sdk::app::updater_thread::{AppStatus, Updater, production_smoke_test};
+        use handy_sdk::input::focus::process_window;
+        use handy_sdk::roblox::http::win_http_get;
+        use handy_sdk::roblox::read::gui_absolute_rect;
+        use handy_sdk::ui::raster::render;
+        use handy_sdk::util::thread::StopThread;
+        use std::time::{Duration, Instant};
+        use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext};
+
+        let dir = std::env::var_os("HANDY_PROBE_DIR").map_or_else(std::env::temp_dir, std::path::PathBuf::from);
+        let u = Arc::new(Updater::new(
+            Arc::new(win_http_get),
+            production_smoke_test,
+            std::env::temp_dir().join("handys_fisch_live"),
+            crate::app::offset_keys::required_keys(),
+        ));
+        let uu = u.clone();
+        let _t = StopThread::spawn(move |st| uu.run(st));
+        for _ in 0..300 {
+            if u.status() == AppStatus::Ready {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let Some(s) = u.session() else {
+            println!("  SKIP: Roblox or offsets not ready");
+            return;
+        };
+        let mut r = GameReader::new(s.clone());
+        let (p, o) = (&s.proc, &s.offsets);
+        // Roblox lays its GUI out in physical pixels: so must the window origin and the screen copy be
+        let _ = unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+        let _ = r.take_catch_popup(); // only a popup that comes after this
+        let t0 = Instant::now();
+        let (text, popup) = loop {
+            if let Some(c) = r.take_catch_popup().filter(|c| c.0.contains("caught")) {
+                break c;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(900), "no catch in 15 minutes");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        println!("  {text}");
+        std::thread::sleep(Duration::from_millis(450)); // fully shown, not fading yet
+        let vp = child_by_name(p, o, child_by_name(p, o, popup, "fih"), "vp");
+        let rect = gui_absolute_rect(p, o, vp).expect("the popup's picture area");
+        let mut origin = windows::Win32::Foundation::POINT::default();
+        if let Some(h) = process_window(p.pid()) {
+            let _ = unsafe { windows::Win32::Graphics::Gdi::ClientToScreen(h, &mut origin) };
+        }
+        let (w, h) = (rect.size.x.round().max(1.0) as u32, rect.size.y.round().max(1.0) as u32);
+        let game = screen(
+            origin.x + rect.pos.x as i32,
+            origin.y + rect.pos.y as i32,
+            w as i32,
+            h as i32,
+        );
+        bmp(&dir.join("game.bmp"), w, h, &game);
+        // the meshes load into the game's cache a little after the popup shows
+        let mut look = None;
+        for _ in 0..25 {
+            look = r.catch_look(popup).filter(|l| !l.model.is_empty());
+            if look.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let Some(look) = look else {
+            println!(
+                "  no 3D model (a flat icon: {:?})",
+                r.catch_look(popup).and_then(|l| l.icon)
+            );
+            return;
+        };
+        bmp(&dir.join("app.bmp"), w, h, &render(&look.model, &[], &look.scene, w, h));
+        let model = crate::r#macro::rarest_model::FishModel {
+            tris: look.model.clone(),
+            scene: look.scene,
+            textures: look.textures.clone(),
+        };
+        crate::r#macro::rarest_model::save(&dir.join("model.bin"), "probe", &model); // for live_render_saved
+        bmp(
+            &dir.join("app_big.bmp"),
+            w * 4,
+            h * 4,
+            &render(&look.model, &[], &look.scene, w * 4, h * 4),
+        );
+        println!(
+            "  {} triangles, textures {:?}, {:?}",
+            look.model.len(),
+            look.textures,
+            look.scene
+        );
+        // what the game paints: each kind of part once, with how many there are
+        let m: &dyn Memory = p;
+        let mut kinds = std::collections::BTreeMap::new();
+        let mut stack = children(p, o, child_by_name(p, o, vp, "viewmodel"));
+        while let Some(c) = stack.pop() {
+            stack.extend(children(p, o, c));
+            let class = instance_class(p, o, c).unwrap_or_default();
+            let what = match class.as_str() {
+                "Part" | "MeshPart" | "PartOperation" | "UnionOperation" | "WedgePart" => {
+                    let prim = m.get::<usize>(o.at(c, "BasePart.Primitive")).unwrap_or(0);
+                    format!(
+                        "{class} rgb={:?} material={:?} transparency={:?}",
+                        m.get::<[u8; 3]>(o.at(c, "BasePart.Color3")),
+                        m.get::<u16>(o.at(prim, "Primitive.Material")),
+                        m.get::<f32>(o.at(c, "BasePart.Transparency")),
+                    )
+                }
+                "Decal" | "Texture" | "SurfaceAppearance" => class,
+                _ => continue,
+            };
+            *kinds.entry(what).or_insert(0) += 1;
+        }
+        for (what, n) in kinds {
+            println!("  {n:3} {what}");
+        }
+        println!("  pictures in {}", dir.display());
+    }
+
+    /// Offline tuning: the model live_compare_popup saved, drawn again (240 px) into HANDY_PROBE_DIR/app_again.bmp.
+    #[test]
+    #[ignore]
+    fn live_render_saved() {
+        let dir = std::env::var_os("HANDY_PROBE_DIR").map_or_else(std::env::temp_dir, std::path::PathBuf::from);
+        let Some(m) = crate::r#macro::rarest_model::load(&dir.join("model.bin"), "probe") else {
+            println!("  SKIP: no model.bin from live_compare_popup");
+            return;
+        };
+        let px = handy_sdk::ui::raster::render(&m.tris, &[], &m.scene, 240, 240);
+        bmp(&dir.join("app_again.bmp"), 240, 240, &px);
     }
 }

@@ -14,8 +14,12 @@ pub struct FishModel {
 }
 
 const MAGIC: &[u8; 4] = b"HFRM";
-const VERSION: u32 = 2;
-const TRI_BYTES: usize = 24 * 4 + 4 + 1 + 4;
+const VERSION: u32 = 3;
+// corners, normals, uvs (24 f32), rgb, flags (glow, shimmer), tex, vertex colors (3 x 4), clear, shine
+const TRI_BYTES: usize = 24 * 4 + 4 + 1 + 4 + 12 + 4 + 4;
+// version 2: no vertex colors, clear or shine; flag 2 was "see-through" (then always a ForceField)
+const V2_TRI_BYTES: usize = 24 * 4 + 4 + 1 + 4;
+const V2_CLEAR: f32 = 0.6;
 // version 1: world-space triangles (corners, normals, rgb, glow), no uv, texture or camera
 const V1_TRI_BYTES: usize = 18 * 4 + 4 + 1;
 const V1_LOOK_DOWN: f32 = 0.4; // radians: how the dashboard used to show them
@@ -43,8 +47,11 @@ pub fn encode(text: &str, model: &FishModel) -> Vec<u8> {
             b.extend(v.to_le_bytes());
         }
         b.extend(t.rgb.to_le_bytes());
-        b.push(u8::from(t.glow) | u8::from(t.see_through) << 1);
+        b.push(u8::from(t.glow) | u8::from(t.shimmer) << 1);
         b.extend(t.tex.to_le_bytes());
+        b.extend(t.vc.as_flattened());
+        b.extend(t.clear.to_le_bytes());
+        b.extend(t.shine.to_le_bytes());
     }
     b
 }
@@ -82,26 +89,38 @@ pub fn decode(b: &[u8], text: &str) -> Option<FishModel> {
         ambient: [v[1], v[2], v[3]],
         color: [v[4], v[5], v[6]],
         dir: [v[7], v[8], v[9]],
+        time: 0.0,
     };
     let n = u32_(&mut rest)? as usize;
     let textures = (0..n.min(1024)).map(|_| str_(&mut rest)).collect::<Option<Vec<_>>>()?;
     let count = u32_(&mut rest)? as usize;
-    if textures.len() != n || rest.len() != count.checked_mul(TRI_BYTES)? {
+    let size = if version == 2 { V2_TRI_BYTES } else { TRI_BYTES };
+    if textures.len() != n || rest.len() != count.checked_mul(size)? {
         return None; // truncated or trailing junk
     }
     let f = |c: &[u8], i: usize| f32::from_le_bytes(c[i * 4..i * 4 + 4].try_into().unwrap());
     let tris = rest
-        .as_chunks::<TRI_BYTES>()
-        .0
-        .iter()
-        .map(|c| Tri {
-            p: [0, 1, 2].map(|v| [0, 1, 2].map(|k| f(c, v * 3 + k))),
-            n: [0, 1, 2].map(|v| [0, 1, 2].map(|k| f(c, 9 + v * 3 + k))),
-            uv: [0, 1, 2].map(|v| [0, 1].map(|k| f(c, 18 + v * 2 + k))),
-            rgb: u32::from_le_bytes(c[96..100].try_into().unwrap()),
-            glow: c[100] & 1 != 0,
-            see_through: c[100] & 2 != 0,
-            tex: u32::from_le_bytes(c[101..105].try_into().unwrap()),
+        .chunks_exact(size)
+        .map(|c| {
+            let flag = c[100] & 2 != 0;
+            let mut t = Tri {
+                p: [0, 1, 2].map(|v| [0, 1, 2].map(|k| f(c, v * 3 + k))),
+                n: [0, 1, 2].map(|v| [0, 1, 2].map(|k| f(c, 9 + v * 3 + k))),
+                uv: [0, 1, 2].map(|v| [0, 1].map(|k| f(c, 18 + v * 2 + k))),
+                rgb: u32::from_le_bytes(c[96..100].try_into().unwrap()),
+                glow: c[100] & 1 != 0,
+                shimmer: flag,
+                tex: u32::from_le_bytes(c[101..105].try_into().unwrap()),
+                ..Tri::default()
+            };
+            if version == 2 {
+                t.clear = if flag { V2_CLEAR } else { 0.0 };
+            } else {
+                t.vc = [0, 1, 2].map(|v| c[105 + v * 4..109 + v * 4].try_into().unwrap());
+                t.clear = f32::from_le_bytes(c[117..121].try_into().unwrap());
+                t.shine = f32::from_le_bytes(c[121..125].try_into().unwrap());
+            }
+            t
         })
         .collect();
     Some(FishModel { tris, scene, textures })
@@ -160,11 +179,15 @@ mod tests {
                     glow: true,
                     uv: [[0.25, 0.5], [1.0, 0.0], [0.0, 1.0]],
                     tex: 1,
-                    see_through: false,
+                    vc: [[1, 2, 3, 255], [0; 4], [255; 4]],
+                    clear: 0.25,
+                    shine: 0.7,
+                    shimmer: false,
                 },
                 Tri {
                     rgb: 0xffffff,
-                    see_through: true,
+                    clear: 0.6,
+                    shimmer: true,
                     ..Tri::default()
                 },
             ],
@@ -187,6 +210,32 @@ mod tests {
         assert_eq!(load(&path, "x"), Some(model));
         assert_eq!(load(&dir.join("missing.bin"), "x"), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rarest_model_reads_version_2() {
+        let mut b = Vec::new();
+        b.extend(MAGIC);
+        b.extend(2u32.to_le_bytes());
+        b.extend(3u32.to_le_bytes());
+        b.extend(b"Cod");
+        for v in [0.35f32, 0.8, 0.8, 0.8, 0.5, 0.5, 0.5, -1.0, -1.0, -1.0] {
+            b.extend(v.to_le_bytes());
+        }
+        b.extend(0u32.to_le_bytes()); // no textures
+        b.extend(1u32.to_le_bytes());
+        b.extend([0u8; 96]);
+        b.extend(0x123456u32.to_le_bytes());
+        b.push(2); // see-through: a ForceField
+        b.extend(0u32.to_le_bytes());
+        let m = decode(&b, "Cod").unwrap();
+        let t = m.tris[0];
+        assert_eq!(
+            (t.rgb, t.glow, t.shimmer, t.clear, t.vc),
+            (0x123456, false, true, V2_CLEAR, [[0; 4]; 3])
+        );
+        assert_eq!(m.scene.fov, 0.35);
+        assert_eq!(decode(&b[..b.len() - 1], "Cod"), None);
     }
 
     #[test]

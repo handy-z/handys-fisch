@@ -50,6 +50,16 @@ pub fn catch_spans(fish: &Option<Catch>, popup: &str) -> Vec<Span> {
 
 const MUTED: &str = "9a9a9a";
 
+/// A rarity's color as 0xRRGGBB (the first of a gradient's), None for an unknown or colorless one.
+pub fn rarity_rgb(rarity: &str) -> Option<u32> {
+    let hex = RARITIES.iter().find(|r| r.name == rarity)?.color.split(' ').next()?;
+    if hex.len() == 6 {
+        u32::from_str_radix(hex, 16).ok()
+    } else {
+        None
+    }
+}
+
 /// "Windy · Aurora Borealis" bold, then their wiki effects muted on a second line ("7× luck · Aurora 1%"); "–"
 /// unread.
 pub fn weather_spans(w: &World) -> Vec<Span> {
@@ -329,6 +339,9 @@ mod tests {
 7× luck · Aurora 1%"
         );
         assert_eq!(time_text(&w), "Night · Winter");
+        assert_eq!(rarity_rgb("Legendary"), Some(0xf0b56d));
+        assert_eq!(rarity_rgb("Exotic"), Some(0xff8080)); // a gradient's first color
+        assert_eq!(rarity_rgb("Nope"), None);
         assert_eq!(text(&boost_spans(&w)), "Meteor · Luck ×2 · Mutation ×1.15");
         assert_eq!(text(&boost_spans(&World::default())), "none");
         assert_eq!(time_text(&World::default()), "–");

@@ -472,7 +472,7 @@ pub struct View {
     pub level: Vec<Piece>,
     /// the same popups parsed; None when they don't
     pub last_fish: Option<Catch>,
-    /// last_fish's 3D model from its popup, when it could be read; not persisted
+    /// last_fish's 3D model from its popup, when it could be read; saved (last_model.bin) like the rarest's
     pub last_model: Option<Arc<FishModel>>,
     pub rarest_fish: Option<Catch>,
     /// rarest_fish's 3D model; saved next to the catch log (rarest_model.bin) so it survives a restart
@@ -513,13 +513,21 @@ fn rarest_model_file(catch_log: &Path) -> PathBuf {
     catch_log.with_file_name("rarest_model.bin")
 }
 
-/// Gives the rarest catch its model when `text` is that catch; the model to save then, else None.
-fn set_rarest_model(v: &mut View, text: &str, model: &Option<Arc<FishModel>>) -> Option<Arc<FishModel>> {
-    if v.rarest != text || model.is_none() {
-        return None;
+fn last_model_file(catch_log: &Path) -> PathBuf {
+    catch_log.with_file_name("last_model.bin")
+}
+
+/// Gives the last and the rarest catch the model when `text` is that catch; whether each took it (to save then).
+fn set_models(v: &mut View, text: &str, model: &Arc<FishModel>) -> (bool, bool) {
+    let last = v.last_catch == text;
+    if last {
+        v.last_model = Some(model.clone());
     }
-    v.rarest_model.clone_from(model);
-    model.clone()
+    let rarest = v.rarest == text;
+    if rarest {
+        v.rarest_model = Some(model.clone());
+    }
+    (last, rarest)
 }
 
 /// Cast -> shake -> reel loop. Input is sent only while Roblox is the foreground window.
@@ -854,9 +862,14 @@ impl Engine<'_> {
         });
     }
 
-    fn save_rarest_model(&self, text: &str, model: Option<Arc<FishModel>>) {
-        if let Some(m) = model {
-            rarest_model::save(&rarest_model_file(&self.bot.catch_log), text, &m);
+    /// The popup's model for the catch `text`: shown on its cards and saved for each (so they survive a restart).
+    fn keep_model(&self, text: &str, model: Arc<FishModel>) {
+        let (last, rarest) = set_models(&mut self.bot.view.lock().unwrap(), text, &model);
+        let log = &self.bot.catch_log;
+        for (took, file) in [(last, last_model_file(log)), (rarest, rarest_model_file(log))] {
+            if took {
+                rarest_model::save(&file, text, &model);
+            }
         }
     }
 
@@ -885,22 +898,20 @@ impl Engine<'_> {
             self.bot.macro_xp.fetch_add(xp.unwrap_or(0), SeqCst);
         }
         let (mut is_last, mut is_rarest) = (false, false);
-        let rarest_model = {
+        {
             let mut v = self.bot.view.lock().unwrap();
             if v.last_catch == text {
                 v.last_fish.clone_from(&c); // now with its XP and icon; a newer catch already replaced it otherwise
-                if model.is_some() {
-                    v.last_model.clone_from(&model);
-                }
                 is_last = true;
             }
             if v.rarest == text {
                 v.rarest_fish.clone_from(&c);
                 is_rarest = true;
             }
-            set_rarest_model(&mut v, text, &model)
-        };
-        self.save_rarest_model(text, rarest_model);
+        }
+        if let Some(model) = model {
+            self.keep_model(text, model);
+        }
         if let Some(c) = c.as_ref().filter(|_| is_last || is_rarest) {
             self.bot.persist(|s| {
                 if is_last {
@@ -1095,6 +1106,7 @@ impl Engine<'_> {
             v.rarest_fish = restored(&cfg.rarest, cfg.rarest_icon, cfg.rarest_tint);
             v.rarest = cfg.rarest;
             v.rarest_model = rarest_model::load(&rarest_model_file(&bot.catch_log), &v.rarest).map(Arc::new);
+            v.last_model = rarest_model::load(&last_model_file(&bot.catch_log), &v.last_catch).map(Arc::new);
             self.rarest_odds = v.rarest_fish.as_ref().map_or(0, |f| f.odds);
         }
         let mut pending_catch: Option<(String, Instant, usize)> = None; // popup text, when it was seen, the popup
@@ -1215,18 +1227,12 @@ impl Engine<'_> {
                 let look = reader.as_mut().and_then(|r| r.catch_look(*popup));
                 match look {
                     Some(l) if !l.model.is_empty() => {
-                        let model = Some(Arc::new(FishModel {
+                        let model = Arc::new(FishModel {
                             tris: l.model,
                             scene: l.scene,
                             textures: l.textures,
-                        }));
-                        let mut v = self.bot.view.lock().unwrap();
-                        if v.last_catch == *text {
-                            v.last_model.clone_from(&model);
-                        }
-                        let rarest_model = set_rarest_model(&mut v, text, &model);
-                        drop(v);
-                        self.save_rarest_model(text, rarest_model);
+                        });
+                        self.keep_model(text, model);
                         pending_model = None;
                     }
                     // popup gone, or no model after 4 s (some popups show only the flat icon)
@@ -1333,6 +1339,21 @@ impl Engine<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bot_models_go_to_their_catch_cards() {
+        let mut v = View {
+            last_catch: "B".into(),
+            rarest: "A".into(),
+            ..View::default()
+        };
+        let m = Arc::new(FishModel::default());
+        assert_eq!(set_models(&mut v, "A", &m), (false, true)); // the rarest only
+        assert!(v.rarest_model.is_some() && v.last_model.is_none());
+        v.rarest = "B".into();
+        assert_eq!(set_models(&mut v, "B", &m), (true, true)); // the last catch is also the rarest
+        assert_eq!(set_models(&mut v, "C", &m), (false, false)); // an older popup: neither
+    }
 
     #[test]
     fn view_tallies_rarities_and_mutations() {
