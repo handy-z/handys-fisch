@@ -88,7 +88,7 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
     // each card's model's textures in its order, kept while the model and the textures loaded stay the same
     let card_textures: RefCell<HashMap<i32, CardTextures>> = RefCell::new(HashMap::new());
     let started = Instant::now(); // the shimmer's clock
-    let meter = RefCell::new(UsageMeter::new()); // what the app costs the machine, in the header
+    let meter = RefCell::new(UsageMeter::new()); // what the app costs the machine, in the title bar
     let textures: RefCell<HashMap<String, Texture>> = RefCell::new(HashMap::new()); // by asset, once downloaded
     let session_due = Cell::new(Instant::now()); // when the time fishing and the /h rates refresh next
     let rates = RefCell::new((String::new(), String::new(), String::new())); // catches, value, xp
@@ -449,7 +449,7 @@ Fisch {}",
             // Rates use only what was gained while auto fish was on, over the time it was fishing.
             let ms = bot.active_ms.load(SeqCst);
             ui.set_text(ID_TIME, &hms(ms));
-            ui.set_header_note(&usage_text(&meter.borrow_mut().sample()));
+            ui.set_title_note(&usage_text(&meter.borrow_mut().sample()));
             *r = (
                 per_hour(i64::from(bot.macro_caught.load(SeqCst)), ms),
                 per_hour(earned_on, ms),

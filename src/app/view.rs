@@ -51,18 +51,12 @@ pub fn catch_spans(fish: &Option<Catch>, popup: &str) -> Vec<Span> {
 
 const MUTED: &str = "9a9a9a";
 
-/// What the app costs the machine, for the header's note: "CPU 0.4% · RAM 48 MB" over "GPU 0.0% · VRAM 0 MB"; "–"
-/// for what couldn't be read (CPU and GPU until a second sample).
+/// What the app costs the machine, for the title bar: "CPU 0.4% · GPU 0.0% · RAM 48 MB"; "–" for what couldn't be
+/// read (CPU and GPU until a second sample).
 pub fn usage_text(u: &Usage) -> String {
     let pct = |v: Option<f32>| v.map_or("–".into(), |v| format!("{v:.1}%"));
-    let mb = |v: Option<u64>| v.map_or("–".into(), |v| format!("{} MB", v >> 20));
-    format!(
-        "CPU {} · RAM {}\nGPU {} · VRAM {}",
-        pct(u.cpu),
-        mb(u.ram),
-        pct(u.gpu),
-        mb(u.vram)
-    )
+    let ram = u.ram.map_or("–".into(), |v| format!("{} MB", v >> 20));
+    format!("CPU {} · GPU {} · RAM {ram}", pct(u.cpu), pct(u.gpu))
 }
 
 /// A 0xRRGGBB color's hue in degrees, None when it is too grey to have a telling one.
@@ -407,9 +401,8 @@ mod tests {
             cpu: Some(0.42),
             ram: Some(48 << 20),
             gpu: None,
-            vram: Some(0),
         };
-        assert_eq!(usage_text(&u), "CPU 0.4% · RAM 48 MB\nGPU – · VRAM 0 MB");
+        assert_eq!(usage_text(&u), "CPU 0.4% · GPU – · RAM 48 MB");
         // the Mythical relic's glyph turned blue to violet in 1.5 s (read live)
         let (a, b) = (hue(0x3e44ff).unwrap(), hue(0x8b3eff).unwrap());
         assert!((237.5..238.5).contains(&a) && (263.5..264.5).contains(&b), "{a} {b}");
