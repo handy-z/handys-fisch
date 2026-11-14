@@ -103,17 +103,13 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             check(ID_ON, "Auto fish"),
             check(ID_PERFECT, "Perfect cast\thold until the bar is full"),
             value(ID_LAST_CAST, "Last cast"),
-            section("Conditions"), // the server's, from ReplicatedStorage/world
-            rich_value(ID_WEATHER, "Weather").lines(2),
-            value(ID_DAYTIME, "Time"),
-            rich_value(ID_BOOSTS, "Boosts"),
             section("This session"),
             // two per line, Catches | Earned over XP | Time; money and xp styled like the game's own labels (view.rs)
             tile(ID_CATCH, "Catches"),
             tile(ID_EARNED, "Earned"),
             tile(ID_XP, "XP gained"),
             tile(ID_TIME, "Time fishing"),
-            rich_value(ID_TALLY, "Rarities").lines(4), // rarities wrap; the counts line under them
+            rich_value(ID_TALLY, "Rarities").lines(3), // rarities may wrap once; the counts line under them
             section("Fish"),                           // kept across restarts
             // Last catch | Rarest: the fish's picture over name · rarity, kg · odds, value · xp in the game's colors;
             // the picture is about 2:1 across the ~220 DIP tile, as long fish are
@@ -131,6 +127,12 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             tile(ID_LEVEL, "Level"),
             tile(ID_BESTIARY, "Bestiary"),
             tile(ID_LIFETIME, "All time"),
+            // its own page: on Fishing and Player it made the window taller than the screen
+            page("World"),
+            section("Conditions"), // the server's, from ReplicatedStorage/world
+            rich_value(ID_WEATHER, "Weather").lines(2),
+            value(ID_DAYTIME, "Time"),
+            rich_value(ID_BOOSTS, "Boosts"),
             section("Location"),
             rich_value(ID_LOCATION, "Zone").lines(2),
         ],
