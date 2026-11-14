@@ -12,7 +12,6 @@ use handy_sdk::input::hooks::KeyPoller;
 use handy_sdk::input::key::{BACKSLASH, ENTER, Key, MOUSE_LEFT, SLASH, SPACE, digit_key, key_down};
 use handy_sdk::input::send::{press, release, tap};
 use handy_sdk::roblox::events::RobloxWatcher;
-use handy_sdk::ui::raster::Tri;
 use handy_sdk::util::timing::{Sustained, precise_wait};
 use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST};
 
@@ -21,7 +20,7 @@ use crate::game::catch::{Catch, Piece, is_item_popup, kg_text, level_pieces, par
 use crate::game::reader::{
     CatchLook, FishState, GameReader, PlayerInfo, ROD_IDLE, ROD_LURE, ROD_REELING, World, line_out, reel_state,
 };
-use crate::r#macro::rarest_model;
+use crate::r#macro::rarest_model::{self, FishModel};
 
 const MS: fn(u64) -> Duration = Duration::from_millis;
 
@@ -474,10 +473,10 @@ pub struct View {
     /// the same popups parsed; None when they don't
     pub last_fish: Option<Catch>,
     /// last_fish's 3D model from its popup, when it could be read; not persisted
-    pub last_model: Option<Arc<Vec<Tri>>>,
+    pub last_model: Option<Arc<FishModel>>,
     pub rarest_fish: Option<Catch>,
     /// rarest_fish's 3D model; saved next to the catch log (rarest_model.bin) so it survives a restart
-    pub rarest_model: Option<Arc<Vec<Tri>>>,
+    pub rarest_model: Option<Arc<FishModel>>,
     pub player: PlayerInfo,
     /// studs/s between the last two position reads (the GPS's "s/s")
     pub speed: Option<f32>,
@@ -515,7 +514,7 @@ fn rarest_model_file(catch_log: &Path) -> PathBuf {
 }
 
 /// Gives the rarest catch its model when `text` is that catch; the model to save then, else None.
-fn set_rarest_model(v: &mut View, text: &str, model: &Option<Arc<Vec<Tri>>>) -> Option<Arc<Vec<Tri>>> {
+fn set_rarest_model(v: &mut View, text: &str, model: &Option<Arc<FishModel>>) -> Option<Arc<FishModel>> {
     if v.rarest != text || model.is_none() {
         return None;
     }
@@ -855,7 +854,7 @@ impl Engine<'_> {
         });
     }
 
-    fn save_rarest_model(&self, text: &str, model: Option<Arc<Vec<Tri>>>) {
+    fn save_rarest_model(&self, text: &str, model: Option<Arc<FishModel>>) {
         if let Some(m) = model {
             rarest_model::save(&rarest_model_file(&self.bot.catch_log), text, &m);
         }
@@ -867,7 +866,11 @@ impl Engine<'_> {
         let mut model = None;
         if let Some(look) = look {
             if !look.model.is_empty() {
-                model = Some(Arc::new(look.model));
+                model = Some(Arc::new(FishModel {
+                    tris: look.model,
+                    scene: look.scene,
+                    textures: look.textures,
+                }));
             }
             if let Some(c) = &mut c {
                 c.icon = look.icon.unwrap_or_default();
@@ -1212,7 +1215,11 @@ impl Engine<'_> {
                 let look = reader.as_mut().and_then(|r| r.catch_look(*popup));
                 match look {
                     Some(l) if !l.model.is_empty() => {
-                        let model = Some(Arc::new(l.model));
+                        let model = Some(Arc::new(FishModel {
+                            tris: l.model,
+                            scene: l.scene,
+                            textures: l.textures,
+                        }));
                         let mut v = self.bot.view.lock().unwrap();
                         if v.last_catch == *text {
                             v.last_model.clone_from(&model);

@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
 use handy_sdk::app::updater_thread::Session;
-use handy_sdk::roblox::instance::{child_by_class, child_by_name, children, data_model, instance_class, instance_name};
+use handy_sdk::roblox::instance::{
+    child_by_class, child_by_name, children, data_model, instance_class, instance_name, read_string,
+};
 use handy_sdk::roblox::memory::Memory;
 use handy_sdk::roblox::mesh::{Mesh, cached_meshes, part_frame, part_mesh_id};
 use handy_sdk::roblox::offsets::Offsets;
@@ -11,7 +13,7 @@ use handy_sdk::roblox::read::{
     number_value, object_value, parent_of, part_position, player_gui, string_value,
 };
 
-use handy_sdk::ui::raster::Tri;
+use handy_sdk::ui::raster::{Scene, Tri};
 
 use super::catch::{NEON, asset_id, model_tint, parse_xp};
 
@@ -20,8 +22,129 @@ use super::catch::{NEON, asset_id, model_tint, parse_xp};
 pub struct CatchLook {
     pub icon: Option<String>,
     pub tint: Option<u32>,
-    /// the popup's 3D model in world space; empty when the mesh offsets are missing or nothing could be read
+    /// the popup's 3D model in its camera's space (render() takes it as is); empty when the mesh offsets are missing
+    /// or nothing could be read
     pub model: Vec<Tri>,
+    /// the popup's camera and light
+    pub scene: Scene,
+    /// the model's texture assets ("rbxassetid://1"): a Tri's tex is 1 + an index here
+    pub textures: Vec<String>,
+}
+
+// shortcut: a ViewportFrame's lighting isn't in the offset dump; found next to its CurrentCamera pointer (0x668) on
+// version-4ea8e85481e34f46. Values out of range fall back to the defaults; search again when the fish look unlit.
+const VP_AMBIENT: usize = 0x6a8;
+const VP_LIGHT_COLOR: usize = 0x6c0;
+const VP_LIGHT_DIRECTION: usize = 0x6cc;
+const LOOK_DOWN: f32 = 0.4; // radians the fallback camera looks down at the model from
+
+/// The popup's camera (position, row-major rotation whose columns are right, up and back) and Scene: its Camera child
+/// and lighting, else a camera looking down at the model's center like the dashboard's old view and the
+/// ViewportFrame's default light.
+fn popup_view(m: &dyn Memory, o: &Offsets, vp: usize, model: &[Tri]) -> (Scene, [f32; 3], [f32; 9]) {
+    let mut scene = Scene::default();
+    let color = |off: usize| {
+        m.get::<[f32; 3]>(vp + off)
+            .filter(|c| c.iter().all(|v| (0.0..=1.0).contains(v)))
+    };
+    if vp != 0 {
+        if let Some(c) = color(VP_AMBIENT) {
+            scene.ambient = c;
+        }
+        if let Some(c) = color(VP_LIGHT_COLOR) {
+            scene.color = c;
+        }
+        if let Some(d) = m
+            .get::<[f32; 3]>(vp + VP_LIGHT_DIRECTION)
+            .filter(|d| d.iter().all(|v| v.is_finite()) && d.iter().any(|v| *v != 0.0))
+        {
+            scene.dir = d;
+        }
+    }
+    let cam = children(m, o, vp)
+        .into_iter()
+        .find(|c| instance_class(m, o, *c).as_deref() == Some("Camera"));
+    let read = cam.and_then(|c| {
+        let pos = m.get::<[f32; 3]>(o.at(c, "Camera.Position"))?;
+        let rot = m.get::<[f32; 9]>(o.at(c, "Camera.Rotation"))?;
+        let fov = m.get::<f32>(o.at(c, "Camera.FieldOfView"))?;
+        let ok = pos.iter().chain(&rot).all(|v| v.is_finite()) && (0.01..3.0).contains(&fov);
+        ok.then_some((pos, rot, fov))
+    });
+    let world_dir = scene.dir;
+    let (eye, rot) = match read {
+        Some((pos, rot, fov)) => {
+            scene.fov = fov;
+            (pos, rot)
+        }
+        None => {
+            let (lo, hi) = model
+                .iter()
+                .flat_map(|t| t.p)
+                .fold(([f32::MAX; 3], [f32::MIN; 3]), |(lo, hi), v| {
+                    (
+                        std::array::from_fn(|k| lo[k].min(v[k])),
+                        std::array::from_fn(|k| hi[k].max(v[k])),
+                    )
+                });
+            let (sn, cs) = LOOK_DOWN.sin_cos();
+            // orthographic: only the direction matters, so the eye can sit at the center
+            let center = std::array::from_fn(|k| (lo[k] + hi[k]) / 2.0);
+            (center, [1.0, 0.0, 0.0, 0.0, cs, sn, 0.0, -sn, cs])
+        }
+    };
+    scene.dir = turn_into(&rot, world_dir); // Roblox gives it in world space
+    (scene, eye, rot)
+}
+
+/// World `v` (a direction) in camera space: its dot with the rotation's columns.
+fn turn_into(rot: &[f32; 9], v: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|c| (0..3).map(|r| rot[3 * r + c] * v[r]).sum())
+}
+
+fn to_camera(t: &Tri, eye: [f32; 3], rot: &[f32; 9]) -> Tri {
+    Tri {
+        p: t.p.map(|v| turn_into(rot, std::array::from_fn(|k| v[k] - eye[k]))),
+        n: t.n.map(|n| turn_into(rot, n)),
+        ..*t
+    }
+}
+
+// Roblox Material enum values (as Primitive.Material holds them)
+const ICE: u16 = 1536;
+const GLACIER: u16 = 1552;
+const GLASS: u16 = 1568;
+const FORCE_FIELD: u16 = 1584;
+
+/// How a part of color `rgb` is painted, as Roblox draws its material: Neon glows, ForceField is a faint see-through
+/// shimmer of a lighter color, Ice and Glacier a little frosted, Glass a little paler; the rest as is.
+fn material_look(rgb: u32, material: u16) -> Tri {
+    let mix = |to: [f32; 3], k: f32| {
+        let c = [16, 8, 0].map(|s| ((rgb >> s) & 0xff) as f32);
+        let m: [u32; 3] = std::array::from_fn(|i| (c[i] + (to[i] - c[i]) * k).round() as u32);
+        (m[0] << 16) | (m[1] << 8) | m[2]
+    };
+    let (rgb, glow, see_through) = match material {
+        NEON => (rgb, true, false),
+        FORCE_FIELD => (mix([255.0; 3], 0.25), false, true),
+        ICE | GLACIER => (mix([205.0, 225.0, 245.0], 0.15), false, false), // the game keeps them dark
+        GLASS => (mix([255.0; 3], 0.2), false, false),
+        _ => (rgb, false, false),
+    };
+    Tri {
+        rgb,
+        glow,
+        see_through,
+        ..Tri::default()
+    }
+}
+
+/// A MeshPart's TextureID ("rbxassetid://1"), when it has one.
+fn mesh_texture(m: &dyn Memory, o: &Offsets, part: usize) -> Option<String> {
+    if !o.values.contains_key("MeshPart.Texture") || instance_class(m, o, part).as_deref() != Some("MeshPart") {
+        return None;
+    }
+    read_string(m, o, o.at(part, "MeshPart.Texture")).filter(|t| asset_id(t).is_some())
 }
 
 /// A unit cube, for plain Parts.
@@ -45,6 +168,7 @@ static BLOCK: LazyLock<Mesh> = LazyLock::new(|| Mesh {
     ]
     .to_vec(),
     normals: Vec::new(),
+    uvs: Vec::new(),
 });
 
 /// A unit-diameter UV sphere with smooth normals, for Ball Parts.
@@ -74,6 +198,7 @@ static BALL: LazyLock<Mesh> = LazyLock::new(|| {
     Mesh {
         positions,
         normals,
+        uvs: Vec::new(),
         tris,
     }
 });
@@ -105,6 +230,7 @@ static CYLINDER: LazyLock<Mesh> = LazyLock::new(|| {
     Mesh {
         positions,
         normals,
+        uvs: Vec::new(),
         tris,
     }
 });
@@ -121,6 +247,7 @@ static WEDGE: LazyLock<Mesh> = LazyLock::new(|| Mesh {
         [0.5, 0.5, 0.5],
     ],
     normals: Vec::new(),
+    uvs: Vec::new(),
     tris: vec![
         [0, 1, 3],
         [0, 3, 2], // bottom
@@ -147,15 +274,8 @@ fn shape_mesh(shape: u8, size: [f32; 3]) -> (&'static Mesh, [f32; 3]) {
 
 /// A part's mesh in world space: fitted to the part's size per axis around its bounding-box center (meshes come in
 /// their own units, centered on the part's CFrame), then turned and moved by the part's rotation and position.
-fn part_tris(
-    mesh: &Mesh,
-    union: bool,
-    rot: &[f32; 9],
-    pos: [f32; 3],
-    size: [f32; 3],
-    rgb: u32,
-    glow: bool,
-) -> Vec<Tri> {
+/// `paint` gives every triangle its color, glow, see_through and texture (tex, used when the mesh has uvs).
+fn part_tris(mesh: &Mesh, union: bool, rot: &[f32; 9], pos: [f32; 3], size: [f32; 3], paint: Tri) -> Vec<Tri> {
     let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
     for v in &mesh.positions {
         for k in 0..3 {
@@ -170,8 +290,13 @@ fn part_tris(
     // a MeshPart mesh is centered on its part; a union's sits around the part's own origin, often off its center
     // (seen live: the Piranha's pieces)
     let origin: [f32; 3] = std::array::from_fn(|k| if union { 0.0 } else { (lo[k] + hi[k]) / 2.0 });
-    // world = R * local with R row-major; not verified live: if parts come out mis-rotated use rot[r + 3 * k]
-    let turn = |l: [f32; 3]| -> [f32; 3] { std::array::from_fn(|r| (0..3).map(|k| rot[3 * r + k] * l[k]).sum()) };
+    // world = R * local with R row-major (checked live against the game's popup, see `tr`)
+    // A union's mesh is stored turned the other way: its rotation applies transposed (live, version-4ea8e85481e34f46:
+    // only then did a Cod's union pieces face as the game's popup draws them; MeshParts face right as is).
+    let tr = union;
+    let turn = |l: [f32; 3]| -> [f32; 3] {
+        std::array::from_fn(|r| (0..3).map(|k| rot[if tr { r + 3 * k } else { 3 * r + k }] * l[k]).sum())
+    };
     let world = |v: [f32; 3]| -> [f32; 3] {
         let w = turn(std::array::from_fn(|k| (v[k] - origin[k]) * scale[k]));
         std::array::from_fn(|r| w[r] + pos[r])
@@ -187,14 +312,16 @@ fn part_tris(
         if u.iter().all(|c| c.is_finite()) { u } else { [0.0; 3] } // flat
     };
     let corner = |i: u32| mesh.positions.get(i as usize).map(|&v| world(v));
+    let uv = |i: u32| mesh.uvs.get(i as usize).copied().unwrap_or_default();
     mesh.tris
         .iter()
         .filter_map(|t| {
             Some(Tri {
                 p: [corner(t[0])?, corner(t[1])?, corner(t[2])?],
                 n: t.map(normal),
-                rgb,
-                glow,
+                uv: t.map(uv),
+                tex: if mesh.uvs.is_empty() { 0 } else { paint.tex },
+                ..paint
             })
         })
         .collect()
@@ -843,7 +970,8 @@ impl GameReader {
             .any(|&c| instance_name(p, o, c).is_some_and(|n| n.ends_with("template")));
         let m: &dyn Memory = p;
         let mut parts = Vec::new();
-        let mut meshes = Vec::new(); // (mesh id, rotation, position, size, rgb, glow)
+        let mut meshes = Vec::new(); // (mesh id, rotation, position, size, paint)
+        let mut textures: Vec<String> = Vec::new(); // the MeshParts' TextureIDs; a Tri's tex is 1 + an index here
         let mut boxes = Vec::new();
         let mut solids = 0;
         let mut stack = kids;
@@ -875,7 +1003,23 @@ impl GameReader {
                     && let Some(id) = part_mesh_id(m, o, c)
                     && let Some((rot, pos, size)) = part_frame(m, o, c)
                 {
-                    meshes.push((id, rot, pos, size, rgb, material == NEON));
+                    let tex = mesh_texture(m, o, c).map_or(0, |t| {
+                        let i = textures.iter().position(|x| *x == t).unwrap_or_else(|| {
+                            textures.push(t);
+                            textures.len() - 1
+                        });
+                        i as u32 + 1
+                    });
+                    meshes.push((
+                        id,
+                        rot,
+                        pos,
+                        size,
+                        Tri {
+                            tex,
+                            ..material_look(rgb, material)
+                        },
+                    ));
                 } else if transparency < 1.0
                     && matches!(class.as_deref(), Some("Part" | "WedgePart"))
                     && let Some((rot, pos, size)) = part_frame(m, o, c)
@@ -889,7 +1033,7 @@ impl GameReader {
                         1
                     };
                     let (mesh, size) = shape_mesh(shape, size);
-                    boxes.extend(part_tris(mesh, false, &rot, pos, size, rgb, material == NEON));
+                    boxes.extend(part_tris(mesh, false, &rot, pos, size, material_look(rgb, material)));
                 }
             }
             stack.extend(children(p, o, c));
@@ -898,19 +1042,26 @@ impl GameReader {
         if !meshes.is_empty() {
             let ids: Vec<(u64, bool)> = meshes.iter().map(|x| x.0).collect();
             let cache = cached_meshes(m, o, data_model(p, o), &ids);
-            for (id, rot, pos, size, rgb, glow) in &meshes {
+            for (id, rot, pos, size, paint) in &meshes {
                 if let Some(mesh) = cache.get(&id.0) {
-                    model.extend(part_tris(mesh, id.1, rot, *pos, *size, *rgb, *glow));
+                    model.extend(part_tris(mesh, id.1, rot, *pos, *size, *paint));
                 }
             }
         }
         if !model.is_empty() {
             model.extend(boxes); // the eyes of a fish whose body was read; alone they are no picture
         }
+        let vp = child_by_name(p, o, fih, "vp");
+        let (scene, eye, rot) = popup_view(m, o, vp, &model);
+        for t in &mut model {
+            *t = to_camera(t, eye, &rot);
+        }
         Some(CatchLook {
             icon,
             tint: model_tint(&parts), // empty unless recolored
             model,
+            scene,
+            textures,
         })
     }
 
@@ -1076,6 +1227,14 @@ impl GameReader {
 mod tests {
     use super::*;
 
+    fn paint(rgb: u32, glow: bool) -> Tri {
+        Tri {
+            rgb,
+            glow,
+            ..Tri::default()
+        }
+    }
+
     fn slots(v: &[(&str, &str)]) -> Slots {
         v.iter().map(|(a, b)| ((*a).to_owned(), (*b).to_owned())).collect()
     }
@@ -1104,10 +1263,18 @@ mod tests {
         let mesh = Mesh {
             positions: vec![[4.0, -1.0, -1.0], [6.0, 1.0, 1.0], [6.0, 0.0, 0.0]],
             normals: vec![[1.0, 0.0, 0.0], [0.0, 1.0, 1.0], [0.0; 3]],
+            uvs: vec![[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]],
             tris: vec![[0, 1, 2], [0, 1, 9]], // the second points past the vertices: dropped
         };
         let rot = [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0];
-        let tris = part_tris(&mesh, false, &rot, [10.0, 20.0, 30.0], [4.0, 2.0, 2.0], 0x123456, true);
+        let tris = part_tris(
+            &mesh,
+            false,
+            &rot,
+            [10.0, 20.0, 30.0],
+            [4.0, 2.0, 2.0],
+            paint(0x123456, true),
+        );
         assert_eq!(tris.len(), 1);
         assert_eq!((tris[0].rgb, tris[0].glow), (0x123456, true));
         // local (1,0,0) scaled to (2,0,0), turned to (0,0,-2); (1,1,1) -> (2,1,1) -> (1,1,-2)
@@ -1131,8 +1298,7 @@ mod tests {
             &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
             [0.0; 3],
             [1.0, 2.0, 2.0],
-            0,
-            false,
+            paint(0, false),
         );
         let k = 1.0 / 5f32.sqrt();
         assert!(close(t[0].n[0], [2.0 * k, k, 0.0]));
@@ -1141,11 +1307,19 @@ mod tests {
             normals: Vec::new(),
             ..mesh.clone()
         };
-        let tris = part_tris(&flat, false, &rot, [0.0; 3], [4.0, 2.0, 2.0], 0, false);
+        let tris = part_tris(&flat, false, &rot, [0.0; 3], [4.0, 2.0, 2.0], paint(0, false));
         assert_eq!(tris[0].n, [[0.0; 3]; 3]);
-        // a union keeps its offset from the part's origin: (6,0,0) -> (12,0,0) -> (0,0,-12)
-        let tris = part_tris(&mesh, true, &rot, [10.0, 20.0, 30.0], [4.0, 2.0, 2.0], 0x123456, true);
-        assert_eq!(tris[0].p[2], [10.0, 20.0, 18.0]);
+        // a union keeps its offset from the part's origin: (6,0,0) -> (12,0,0)
+        let tris = part_tris(
+            &mesh,
+            true,
+            &rot,
+            [10.0, 20.0, 30.0],
+            [4.0, 2.0, 2.0],
+            paint(0x123456, true),
+        );
+        // turned the other way, as unions are: (12,0,0) -> (0,0,12)
+        assert_eq!(tris[0].p[2], [10.0, 20.0, 42.0]);
     }
 
     #[test]
@@ -1154,7 +1328,7 @@ mod tests {
         let pos = [10.0, 20.0, 30.0];
         let shape = |s: u8, size: [f32; 3]| {
             let (mesh, size) = shape_mesh(s, size);
-            part_tris(mesh, false, &id, pos, size, 0, false)
+            part_tris(mesh, false, &id, pos, size, paint(0, false))
         };
         let corners = |t: &[Tri]| {
             t.iter()

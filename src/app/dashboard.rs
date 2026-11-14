@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -11,9 +12,10 @@ use handy_sdk::input::focus::{ForegroundWatcher, activate_process_window};
 use handy_sdk::input::key::vk_name;
 use handy_sdk::ui::Tone;
 use handy_sdk::ui::d2d::add_font_file;
+use handy_sdk::ui::d2d::load_texture;
 use handy_sdk::ui::dashboard::{Dashboard, Span, Spec, check, page, rich_value, section, tile, value};
 use handy_sdk::ui::overlay::StatusOverlay;
-use handy_sdk::ui::raster::render;
+use handy_sdk::ui::raster::{Texture, render};
 use handy_sdk::util::paths::app_data_dir;
 use windows::Win32::UI::WindowsAndMessaging::SHOW_WINDOW_CMD;
 
@@ -73,7 +75,9 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
     let font_tried_for = RefCell::new(String::new()); // Roblox exe whose font we loaded (or tried to)
     let bot = deps.bot;
     let roblox_pid = Cell::new(0u32);
-    let started = Instant::now(); // the last catch's model turns with time since
+    // what each fish card last drew (model, size, textures loaded): the picture is still, so it's drawn once
+    let drawn: RefCell<HashMap<i32, (usize, u32, u32, usize)>> = RefCell::new(HashMap::new());
+    let textures: RefCell<HashMap<String, Texture>> = RefCell::new(HashMap::new()); // by asset, once downloaded
     let session_due = Cell::new(Instant::now()); // when the time fishing and the /h rates refresh next
     let rates = RefCell::new((String::new(), String::new(), String::new())); // catches, value, xp
     let quit_by: Cell<Option<Instant>> = Cell::new(None); // set by the first close: exit when the bot is ready, or then
@@ -328,11 +332,10 @@ Fisch {}",
         }
         ui.set_spans(ID_LAST, &catch_spans(&v.last_fish, &v.last_catch));
         ui.set_spans(ID_RAREST, &catch_spans(&v.rarest_fish, &v.rarest));
-        // the game's own picture: the 3D model its catch popup showed (turning slowly), else the popup's 2D icon and its
+        // the game's own picture: the 3D model its catch popup showed, as its camera saw it, else the popup's 2D icon and its
         // recolor; nothing when neither was read
         let picture = |f: &Option<Catch>| f.as_ref().map_or_else(PathBuf::new, |f| pictures.get(&f.icon));
         let tint = |f: &Option<Catch>| f.as_ref().and_then(|f| f.tint);
-        let yaw = started.elapsed().as_secs_f32() * 0.8; // radians: one slow turn about every 8 s
         for (id, model, fish) in [
             (ID_LAST, &v.last_model, &v.last_fish),
             (ID_RAREST, &v.rarest_model, &v.rarest_fish),
@@ -342,9 +345,30 @@ Fisch {}",
             }
             match (model, ui.picture_size(id)) {
                 (Some(model), Some((w, h))) if w > 0 && h > 0 => {
-                    ui.set_picture_pixels(id, w, h, &render(model, w, h, yaw));
+                    // textures download like icons: each one that arrives redraws the picture once
+                    let mut cache = textures.borrow_mut();
+                    for t in &model.textures {
+                        if !cache.contains_key(t) {
+                            let file = pictures.get(t);
+                            if !file.as_os_str().is_empty() {
+                                cache.insert(t.clone(), load_texture(&file).unwrap_or_default());
+                            }
+                        }
+                    }
+                    let loaded = model.textures.iter().filter(|t| cache.contains_key(*t)).count();
+                    let key = (Arc::as_ptr(model) as usize, w, h, loaded);
+                    if drawn.borrow().get(&id) != Some(&key) {
+                        let tex: Vec<Texture> = model
+                            .textures
+                            .iter()
+                            .map(|t| cache.get(t).cloned().unwrap_or_default())
+                            .collect();
+                        ui.set_picture_pixels(id, w, h, &render(&model.tris, &tex, &model.scene, w, h));
+                        drawn.borrow_mut().insert(id, key);
+                    }
                 }
                 _ => {
+                    drawn.borrow_mut().remove(&id);
                     ui.set_picture(id, &picture(fish), tint(fish));
                 }
             }
