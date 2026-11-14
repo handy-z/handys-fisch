@@ -1690,6 +1690,7 @@ mod live_compare {
             tris: look.model.clone(),
             scene: look.scene,
             textures: look.textures.clone(),
+            hue_rate: 0.0,
         };
         crate::r#macro::rarest_model::save(&dir.join("model.bin"), "probe", &model); // for live_render_saved
         bmp(

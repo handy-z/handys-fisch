@@ -11,10 +11,12 @@ pub struct FishModel {
     pub tris: Vec<Tri>,
     pub scene: Scene,
     pub textures: Vec<String>,
+    /// Degrees a second the game turns every part's hue (a rainbow catch); 0 for still colors.
+    pub hue_rate: f32,
 }
 
 const MAGIC: &[u8; 4] = b"HFRM";
-const VERSION: u32 = 3;
+const VERSION: u32 = 4; // 3: no hue_rate
 // corners, normals, uvs (24 f32), rgb, flags (glow, shimmer), tex, vertex colors (3 x 4), clear, shine
 const TRI_BYTES: usize = 24 * 4 + 4 + 1 + 4 + 12 + 4 + 4;
 // version 2: no vertex colors, clear or shine; flag 2 was "see-through" (then always a ForceField)
@@ -41,6 +43,7 @@ pub fn encode(text: &str, model: &FishModel) -> Vec<u8> {
     for t in &model.textures {
         str_(&mut b, t);
     }
+    b.extend(model.hue_rate.to_le_bytes());
     b.extend((model.tris.len() as u32).to_le_bytes());
     for t in &model.tris {
         for v in t.p.iter().chain(&t.n).flatten().chain(t.uv.iter().flatten()) {
@@ -93,6 +96,7 @@ pub fn decode(b: &[u8], text: &str) -> Option<FishModel> {
     };
     let n = u32_(&mut rest)? as usize;
     let textures = (0..n.min(1024)).map(|_| str_(&mut rest)).collect::<Option<Vec<_>>>()?;
+    let hue_rate = if version >= 4 { f32_(&mut rest)? } else { 0.0 };
     let count = u32_(&mut rest)? as usize;
     let size = if version == 2 { V2_TRI_BYTES } else { TRI_BYTES };
     if textures.len() != n || rest.len() != count.checked_mul(size)? {
@@ -123,7 +127,12 @@ pub fn decode(b: &[u8], text: &str) -> Option<FishModel> {
             t
         })
         .collect();
-    Some(FishModel { tris, scene, textures })
+    Some(FishModel {
+        tris,
+        scene,
+        textures,
+        hue_rate,
+    })
 }
 
 /// A version 1 file's triangles, seen from the slight elevation the dashboard used, under the default light.
@@ -196,6 +205,7 @@ mod tests {
                 ..Scene::default()
             },
             textures: vec!["rbxassetid://123".into()],
+            hue_rate: -20.5,
         };
         let b = encode("Cod · 1.2 kg", &model);
         assert_eq!(decode(&b, "Cod · 1.2 kg"), Some(model.clone()));

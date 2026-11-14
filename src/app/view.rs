@@ -50,6 +50,46 @@ pub fn catch_spans(fish: &Option<Catch>, popup: &str) -> Vec<Span> {
 
 const MUTED: &str = "9a9a9a";
 
+/// A 0xRRGGBB color's hue in degrees, None when it is too grey to have a telling one.
+pub fn hue(rgb: u32) -> Option<f32> {
+    let [r, g, b] = [16, 8, 0].map(|s| ((rgb >> s) & 0xff) as f32 / 255.0);
+    let (hi, lo) = (r.max(g).max(b), r.min(g).min(b));
+    if hi <= 0.0 || (hi - lo) / hi < 0.15 {
+        return None;
+    }
+    let d = hi - lo;
+    let h = if hi == r {
+        (g - b) / d
+    } else if hi == g {
+        2.0 + (b - r) / d
+    } else {
+        4.0 + (r - g) / d
+    };
+    Some((h * 60.0).rem_euclid(360.0))
+}
+
+/// The color with its hue turned by `degrees`, its saturation and brightness kept.
+pub fn hue_shift(rgb: u32, degrees: f32) -> u32 {
+    let [r, g, b] = [16, 8, 0].map(|s| ((rgb >> s) & 0xff) as f32 / 255.0);
+    let (hi, lo) = (r.max(g).max(b), r.min(g).min(b));
+    let Some(h) = hue(rgb).filter(|_| hi > lo) else {
+        return rgb;
+    };
+    let h = (h + degrees).rem_euclid(360.0) / 60.0;
+    let x = (h % 2.0 - 1.0).abs();
+    let mid = hi - (hi - lo) * x; // the middle channel between the extremes
+    let (r, g, b) = match h as u32 {
+        0 => (hi, lo + (hi - lo) * (1.0 - x), lo),
+        1 => (mid, hi, lo),
+        2 => (lo, hi, lo + (hi - lo) * (1.0 - x)),
+        3 => (lo, mid, hi),
+        4 => (lo + (hi - lo) * (1.0 - x), lo, hi),
+        _ => (hi, lo, mid),
+    };
+    let byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u32;
+    (byte(r) << 16) | (byte(g) << 8) | byte(b)
+}
+
 /// A rarity's color as 0xRRGGBB (the first of a gradient's), None for an unknown or colorless one.
 pub fn rarity_rgb(rarity: &str) -> Option<u32> {
     let hex = RARITIES.iter().find(|r| r.name == rarity)?.color.split(' ').next()?;
@@ -342,6 +382,15 @@ mod tests {
         assert_eq!(rarity_rgb("Legendary"), Some(0xf0b56d));
         assert_eq!(rarity_rgb("Exotic"), Some(0xff8080)); // a gradient's first color
         assert_eq!(rarity_rgb("Nope"), None);
+        // the Mythical relic's glyph turned blue to violet in 1.5 s (read live)
+        let (a, b) = (hue(0x3e44ff).unwrap(), hue(0x8b3eff).unwrap());
+        assert!((237.5..238.5).contains(&a) && (263.5..264.5).contains(&b), "{a} {b}");
+        assert_eq!(hue(0x707070), None); // grey: no hue
+        assert_eq!(hue_shift(0xff0000, 120.0), 0x00ff00);
+        assert_eq!(hue_shift(0x00ff00, -120.0), 0xff0000);
+        assert_eq!(hue_shift(0x707070, 90.0), 0x707070);
+        let turned = hue_shift(0x3e44ff, 30.0);
+        assert!((hue(turned).unwrap() - (a + 30.0)).abs() < 1.5, "{turned:06x}");
         assert_eq!(text(&boost_spans(&w)), "Meteor · Luck ×2 · Mutation ×1.15");
         assert_eq!(text(&boost_spans(&World::default())), "none");
         assert_eq!(time_text(&World::default()), "–");

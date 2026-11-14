@@ -16,6 +16,7 @@ use handy_sdk::util::timing::{Sustained, precise_wait};
 use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST};
 
 use crate::app::config::{Settings, SettingsStore, load_settings};
+use crate::app::view::hue;
 use crate::game::catch::{Catch, Piece, is_item_popup, kg_text, level_pieces, parse_catch};
 use crate::game::reader::{
     CatchLook, FishState, GameReader, PlayerInfo, ROD_IDLE, ROD_LURE, ROD_REELING, World, line_out, reel_state,
@@ -509,6 +510,42 @@ impl View {
     }
 }
 
+/// A catch's popup still to read: its text, when it showed, its address, and for a second look the first look's time
+/// and a part's color then.
+type PendingModel = (String, Instant, usize, Option<(Instant, u32)>);
+
+/// What still to read of a catch's popup after its first look: its model while it isn't there yet, else a second look
+/// for a turning hue (when a part has a hue to tell); None when neither.
+fn model_followup(
+    text: &str,
+    at: Instant,
+    popup: usize,
+    look: Option<&CatchLook>,
+    now: Instant,
+) -> Option<PendingModel> {
+    let look = look?;
+    if look.model.is_empty() {
+        return Some((text.into(), at, popup, None));
+    }
+    hue_reference(&look.model).map(|c| (text.into(), at, popup, Some((now, c))))
+}
+
+/// The first part color with a telling hue: the same part in every look at one popup (they read the model alike).
+fn hue_reference(tris: &[handy_sdk::ui::raster::Tri]) -> Option<u32> {
+    tris.iter().map(|t| t.rgb).find(|c| hue(*c).is_some())
+}
+
+/// Degrees a second the hue turned from `a` to `b` in `secs` (the short way round); 0 below a few degrees a second,
+/// as a still color's rounding gives.
+fn hue_rate(a: u32, b: u32, secs: f32) -> f32 {
+    let (Some(ha), Some(hb)) = (hue(a), hue(b)) else {
+        return 0.0;
+    };
+    let turned = (hb - ha + 540.0).rem_euclid(360.0) - 180.0;
+    let rate = turned / secs.max(0.1);
+    if rate.abs() < 3.0 { 0.0 } else { rate }
+}
+
 fn rarest_model_file(catch_log: &Path) -> PathBuf {
     catch_log.with_file_name("rarest_model.bin")
 }
@@ -883,6 +920,7 @@ impl Engine<'_> {
                     tris: look.model,
                     scene: look.scene,
                     textures: look.textures,
+                    hue_rate: 0.0, // measured by a second look (the model loop)
                 }));
             }
             if let Some(c) = &mut c {
@@ -1110,9 +1148,9 @@ impl Engine<'_> {
             self.rarest_odds = v.rarest_fish.as_ref().map_or(0, |f| f.odds);
         }
         let mut pending_catch: Option<(String, Instant, usize)> = None; // popup text, when it was seen, the popup
-        // A catch whose popup had no 3D model yet when it was read: the game fills it in a moment later, sometimes
-        // after the XP shows. Same tuple as pending_catch.
-        let mut pending_model: Option<(String, Instant, usize)> = None;
+        // A catch whose popup had no 3D model yet when it was read (the game fills it in a moment later, sometimes
+        // after the XP shows), or whose model gets a second look for a turning hue.
+        let mut pending_model: Option<PendingModel> = None;
         let mut next_model_try = Instant::now();
         let mut reel_missing = Sustained::default();
         let mut warned = false;
@@ -1166,9 +1204,7 @@ impl Engine<'_> {
                     if let Some((t, at, prev)) = pending_catch.take() {
                         let xp = r.catch_xp();
                         let look = r.catch_look(prev);
-                        if look.as_ref().is_some_and(|l| l.model.is_empty()) {
-                            pending_model = Some((t.clone(), at, prev));
-                        }
+                        pending_model = model_followup(&t, at, prev, look.as_ref(), now);
                         self.finish_catch(&t, xp, look);
                     }
                     self.count_catch(&text);
@@ -1213,31 +1249,44 @@ impl Engine<'_> {
                     && let Some((text, at, popup)) = pending_catch.take()
                 {
                     let look = reader.as_mut().and_then(|r| r.catch_look(popup));
-                    if look.as_ref().is_some_and(|l| l.model.is_empty()) {
-                        pending_model = Some((text.clone(), at, popup));
-                    }
+                    pending_model = model_followup(&text, at, popup, look.as_ref(), now);
                     self.finish_catch(&text, xp, look);
                 }
             }
-            if let Some((text, at, popup)) = &pending_model
+            if let Some((text, at, popup, first)) = pending_model.clone()
                 && !self.reeling
                 && now >= next_model_try
             {
                 next_model_try = now + MS(200); // an empty popup costs ~60 reads; the model's meshes a few hundred once
-                let look = reader.as_mut().and_then(|r| r.catch_look(*popup));
+                let look = reader.as_mut().and_then(|r| r.catch_look(popup));
                 match look {
                     Some(l) if !l.model.is_empty() => {
+                        let color = hue_reference(&l.model);
+                        let hue_rate = match (first, color) {
+                            (Some((t0, c0)), Some(c1)) => hue_rate(c0, c1, (now - t0).as_secs_f32()),
+                            _ => 0.0,
+                        };
                         let model = Arc::new(FishModel {
                             tris: l.model,
                             scene: l.scene,
                             textures: l.textures,
+                            hue_rate,
                         });
-                        self.keep_model(text, model);
-                        pending_model = None;
+                        pending_model = match (first, color) {
+                            // the model just arrived: look again later for a turning hue
+                            (None, Some(c)) => Some((text.clone(), at, popup, Some((now, c)))),
+                            _ => None,
+                        };
+                        if pending_model.is_some() {
+                            next_model_try = now + MS(500);
+                        }
+                        if first.is_none() || hue_rate != 0.0 {
+                            self.keep_model(&text, model);
+                        }
                     }
                     // popup gone, or no model after 4 s (some popups show only the flat icon)
                     None => pending_model = None,
-                    Some(_) if now - *at > MS(4000) => pending_model = None,
+                    Some(_) if now - at > MS(4000) => pending_model = None,
                     Some(_) => {}
                 }
             }
@@ -1339,6 +1388,17 @@ impl Engine<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bot_measures_a_turning_hue() {
+        // the Mythical relic's glyph, read live 1.5 s apart: about +17 degrees a second
+        let r = hue_rate(0x3e44ff, 0x8b3eff, 1.5);
+        assert!((16.5..18.0).contains(&r), "{r}");
+        assert!((hue_rate(0x8b3eff, 0x3e44ff, 1.5) + r).abs() < 0.01); // the other way
+        assert_eq!(hue_rate(0x3e44ff, 0x3e44ff, 0.5), 0.0); // still
+        assert!(hue_rate(0xff0010, 0xff1000, 0.5) > 0.0); // the short way across red (0 degrees)
+        assert_eq!(hue_rate(0x707070, 0x3e44ff, 0.5), 0.0); // grey: no hue to compare
+    }
 
     #[test]
     fn bot_models_go_to_their_catch_cards() {

@@ -15,15 +15,15 @@ use handy_sdk::ui::d2d::add_font_file;
 use handy_sdk::ui::d2d::load_texture;
 use handy_sdk::ui::dashboard::{Dashboard, Span, Spec, check, page, rich_value, section, tile, value};
 use handy_sdk::ui::overlay::StatusOverlay;
-use handy_sdk::ui::raster::{Scene, Texture, aura, render};
+use handy_sdk::ui::raster::{Scene, Texture, Tri, aura, render};
 use handy_sdk::util::paths::app_data_dir;
 use windows::Win32::UI::WindowsAndMessaging::SHOW_WINDOW_CMD;
 
 use super::config::SettingsStore;
 use super::fish_pictures::FishPictures;
 use super::view::{
-    bestiary_color, boost_spans, catch_spans, coin_spans, earned_spans, gps_text, hms, lifetime_spans, overlay_text,
-    per_hour, rarity_rgb, save_warning, spans, styled, tally_spans, time_text, weather_spans, xp_spans,
+    bestiary_color, boost_spans, catch_spans, coin_spans, earned_spans, gps_text, hms, hue_shift, lifetime_spans,
+    overlay_text, per_hour, rarity_rgb, save_warning, spans, styled, tally_spans, time_text, weather_spans, xp_spans,
 };
 use crate::game::catch::{Catch, LABEL_STROKE, bait_ability, bait_stats, rod_pieces, rod_stat_pieces, rod_stats};
 use crate::r#macro::bot::{Bot, release_inputs};
@@ -365,7 +365,8 @@ Fisch {}",
                     }
                     let loaded = model.textures.iter().filter(|t| cache.contains_key(*t)).count();
                     // a ForceField ripples: redraw it SHIMMER_FPS times a second, a still model once
-                    let shimmer = model.tris.iter().any(|t| t.shimmer);
+                    // and a rainbow catch's colors turn, as the game turns them
+                    let shimmer = model.tris.iter().any(|t| t.shimmer) || model.hue_rate != 0.0;
                     let elapsed = started.elapsed();
                     let frame = if shimmer {
                         elapsed.as_millis() * SHIMMER_FPS / 1000
@@ -384,7 +385,22 @@ Fisch {}",
                             time: elapsed.as_secs_f32(),
                             ..model.scene
                         };
-                        let mut px = render(&model.tris, &maps[&id].1, &scene, w, h);
+                        let turned: Vec<_>;
+                        let tris = if model.hue_rate == 0.0 {
+                            &model.tris
+                        } else {
+                            let by = model.hue_rate * scene.time;
+                            turned = model
+                                .tris
+                                .iter()
+                                .map(|t| Tri {
+                                    rgb: hue_shift(t.rgb, by),
+                                    ..*t
+                                })
+                                .collect();
+                            &turned
+                        };
+                        let mut px = render(tris, &maps[&id].1, &scene, w, h);
                         // the popup's rays behind the fish are in its rarity's color
                         if let Some(rgb) = fish.as_ref().and_then(|f| rarity_rgb(&f.rarity)) {
                             aura(&mut px, w, h, rgb);
