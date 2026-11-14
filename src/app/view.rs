@@ -111,8 +111,8 @@ fn times(x: f64) -> String {
     s.trim_end_matches('0').trim_end_matches('.').into()
 }
 
-/// "12 Common · 3 Rare" (most first, each in its rarity's color), then muted "2 mutated · 1 shiny · 4/6 perfect"; the
-/// second line only with something on it.
+/// "12 Common · 3 Rare" (most first, each in its rarity's color, wrapped before the row's edge), then muted
+/// "2 mutated · 1 shiny · 4/6 perfect" on a line of its own, only with something on it.
 pub fn tally_spans(
     rarities: &[(String, i32)],
     mutated: i32,
@@ -122,10 +122,24 @@ pub fn tally_spans(
 ) -> Vec<Span> {
     let mut sorted = rarities.to_vec();
     sorted.sort_by_key(|r| std::cmp::Reverse(r.1)); // stable: ties stay in first-caught order
+    // a new line rather than one cut off at the row's edge
+    const LINE: usize = 62; // characters: the row fit "4 Mythical · 3 Uncommon · 2 Common · 2 Fragment · 1 Unusual"
     let mut out = Vec::new();
+    let mut line = 0;
     for (i, (name, n)) in sorted.iter().enumerate() {
         let color = RARITIES.iter().find(|r| r.name == name).map_or("", |r| r.color);
-        out.push(Span::plain(&format!("{}{n} ", if i > 0 { " · " } else { "" })));
+        let entry = format!("{n} {name}").chars().count();
+        let sep = if i == 0 {
+            ""
+        } else if line + 3 + entry > LINE {
+            line = 0;
+            "\n"
+        } else {
+            line += 3;
+            " · "
+        };
+        line += entry;
+        out.push(Span::plain(&format!("{sep}{n} ")));
         out.push(game_span(name.clone(), color, true, false, ""));
     }
     if out.is_empty() {
@@ -325,6 +339,16 @@ mod tests {
 1 mutated · 3/4 perfect"
         );
         assert_eq!(text(&tally_spans(&[], 0, 0, 0, (0, 0))), "–");
+        let many: Vec<(String, i32)> = ["Mythical", "Uncommon", "Common", "Fragment", "Unusual", "Legendary"]
+            .iter()
+            .enumerate()
+            .map(|(i, n)| ((*n).to_owned(), 6 - i as i32))
+            .collect();
+        let t = text(&tally_spans(&many, 0, 0, 0, (0, 0)));
+        assert_eq!(
+            t,
+            "6 Mythical · 5 Uncommon · 4 Common · 3 Fragment · 2 Unusual\n1 Legendary"
+        );
     }
 
     #[test]

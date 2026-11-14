@@ -105,8 +105,8 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             tile(ID_EARNED, "Earned"),
             tile(ID_XP, "XP gained"),
             tile(ID_TIME, "Time fishing"),
-            rich_value(ID_TALLY, "Rarities").lines(2),
-            section("Fish"), // kept across restarts
+            rich_value(ID_TALLY, "Rarities").lines(4), // rarities wrap; the counts line under them
+            section("Fish"),                           // kept across restarts
             // Last catch | Rarest: the fish's picture over name · rarity, kg · odds, value · xp in the game's colors;
             // the picture is about 2:1 across the ~220 DIP tile, as long fish are
             tile(ID_LAST, "Last catch").picture(90).lines(3),
