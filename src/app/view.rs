@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use handy_sdk::ui::dashboard::Span;
 use handy_sdk::ui::raster::Texture;
 use handy_sdk::ui::theme::rgb;
@@ -171,73 +173,139 @@ pub fn rarity_rgb(rarity: &str) -> Option<u32> {
     }
 }
 
-/// "Windy · Aurora Borealis" bold, then their wiki effects muted on a second line ("7× luck · Aurora 1%"); "–"
-/// unread.
-pub fn weather_spans(w: &World) -> Vec<Span> {
+/// A condition's name as the game's tooltip styles it: bold italic in its color (`colors`: name -> hex, from its icon;
+/// the text color without one), outlined.
+fn condition_name(name: &str, colors: &HashMap<String, String>) -> Span {
+    game_span(
+        name.into(),
+        colors.get(name).map_or("", String::as_str),
+        true,
+        true,
+        LABEL_STROKE,
+    )
+}
+
+/// Names in condition_name style, " · " between them.
+fn condition_names(names: &[&str], colors: &HashMap<String, String>) -> Vec<Span> {
+    let mut out = Vec::new();
+    for (i, n) in names.iter().enumerate() {
+        if i > 0 {
+            out.push(Span::plain(" · "));
+        }
+        out.push(condition_name(n, colors));
+    }
+    out
+}
+
+/// Muted italic lines under a condition's name, as the tooltip's own lines are italic; nothing for "".
+fn info_lines(text: &str) -> Vec<Span> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    vec![game_span(format!("\n{text}"), MUTED, false, true, "")]
+}
+
+/// The game clock from the HUD's day/night tooltip ("Night\n12:13 AM" -> "12:13 AM").
+pub fn game_clock(tips: &[String]) -> Option<&str> {
+    tips.iter().find_map(|t| {
+        let (first, rest) = t.split_once('\n')?;
+        (first == "Day" || first == "Night")
+            .then(|| rest.lines().next().unwrap_or("").trim())
+            .filter(|c| !c.is_empty())
+    })
+}
+
+/// An event's time left from its HUD tooltip ("Shiny Surge\n+3% Shiny chance\n01:42 remaining" -> "01:42").
+pub fn time_left<'a>(tips: &'a [String], event: &str) -> Option<&'a str> {
+    tips.iter()
+        .filter(|t| t.lines().next() == Some(event))
+        .find_map(|t| t.lines().find_map(|l| l.trim().strip_suffix(" remaining")))
+}
+
+/// The weathers styled as the game's tooltips, their wiki effects under them; "–" unread.
+pub fn weather_spans(w: &World, colors: &HashMap<String, String>) -> Vec<Span> {
     if w.weather.is_empty() {
         return styled("–", "", false, "");
     }
-    let mut out = styled(&w.weather.join(" · "), "", true, "");
+    let mut out = condition_names(&w.weather.iter().map(String::as_str).collect::<Vec<_>>(), colors);
     let effects: Vec<&str> = w
         .weather
         .iter()
         .map(|n| weather_effect(n))
         .filter(|e| !e.is_empty())
         .collect();
-    if !effects.is_empty() {
-        out.extend(styled(
-            &format!(
-                "
-{}",
-                effects.join(" · ")
-            ),
-            MUTED,
-            false,
-            "",
-        ));
-    }
+    out.extend(info_lines(&effects.join(" · ")));
     out
 }
 
-/// "Night · Winter", then what they do muted on the next line(s); "–" unread.
-pub fn time_spans(w: &World) -> Vec<Span> {
-    let parts: Vec<&str> = [w.cycle.as_str(), w.season.as_str()]
+/// Day/Night and the season styled as the game's tooltips, then the game clock, what they do under them; "–" unread.
+pub fn time_spans(w: &World, colors: &HashMap<String, String>) -> Vec<Span> {
+    let names: Vec<&str> = [w.cycle.as_str(), w.season.as_str()]
         .into_iter()
         .filter(|p| !p.is_empty())
         .collect();
-    if parts.is_empty() {
+    if names.is_empty() {
         return styled("–", "", false, "");
     }
-    let mut out = styled(&parts.join(" · "), "", false, "");
-    let effect = time_effect(&w.cycle, &w.season);
-    if !effect.is_empty() {
-        out.extend(styled(&format!("\n{effect}"), MUTED, false, ""));
+    let mut out = condition_names(&names, colors);
+    if let Some(clock) = game_clock(&w.tips) {
+        out.push(Span::plain(&format!(" · {clock}")));
     }
+    out.extend(info_lines(&time_effect(&w.cycle, &w.season)));
     out
 }
 
-/// Events bold, then the server multipliers ("Luck ×2 · XP ×1.5"); a muted "none" when there are neither.
-pub fn boost_spans(w: &World) -> Vec<Span> {
+/// Events styled as the game's tooltips with their time left, then the server multipliers ("Luck ×2 · XP ×1.5"),
+/// what the events do under them; a muted "none" when there are neither.
+pub fn boost_spans(w: &World, colors: &HashMap<String, String>) -> Vec<Span> {
     let boosts: Vec<String> = w.boosts.iter().map(|(n, x)| format!("{n} ×{}", times(*x))).collect();
     if w.events.is_empty() && boosts.is_empty() {
         return styled("none", MUTED, false, "");
     }
-    let mut out = styled(&w.events.join(" · "), "", true, "");
+    let mut out = Vec::new();
+    for (i, e) in w.events.iter().enumerate() {
+        if i > 0 {
+            out.push(Span::plain(" · "));
+        }
+        out.push(condition_name(e, colors));
+        if let Some(left) = time_left(&w.tips, e) {
+            out.push(Span::plain(&format!(" {left} left")));
+        }
+    }
     if !boosts.is_empty() {
         let sep = if w.events.is_empty() { "" } else { " · " };
         out.extend(styled(&format!("{sep}{}", boosts.join(" · ")), "", false, ""));
     }
-    // what the events do, muted under them
     let effects: Vec<&str> = w
         .events
         .iter()
         .map(|e| event_effect(e))
         .filter(|e| !e.is_empty())
         .collect();
-    if !effects.is_empty() {
-        out.extend(styled(&format!("\n{}", effects.join(" · ")), MUTED, false, ""));
-    }
+    out.extend(info_lines(&effects.join(" · ")));
     out
+}
+
+/// An icon's color as hex "rrggbb": the average of its colored, solid pixels; None for a grey or white one.
+pub fn icon_color(icon: &Texture) -> Option<String> {
+    let (mut sum, mut colored, mut solid) = ([0u64; 3], 0u64, 0u64);
+    for p in icon.rgba.as_chunks::<4>().0.iter().filter(|p| p[3] > 128) {
+        solid += 1;
+        let (hi, lo) = (p[0].max(p[1]).max(p[2]), p[0].min(p[1]).min(p[2]));
+        if hi > 0 && f32::from(hi - lo) / f32::from(hi) >= 0.25 {
+            colored += 1;
+            (0..3).for_each(|k| sum[k] += u64::from(p[k]));
+        }
+    }
+    // a few tinted edge pixels don't make a white icon colored
+    (colored > 0 && colored * 10 >= solid).then(|| {
+        format!(
+            "{:02x}{:02x}{:02x}",
+            sum[0] / colored,
+            sum[1] / colored,
+            sum[2] / colored
+        )
+    })
 }
 
 /// 2 -> "2", 1.15 -> "1.15"
@@ -464,13 +532,14 @@ mod tests {
             boosts: vec![("Luck", 2.0), ("Mutation", 1.15)],
             ..World::default()
         };
+        let none = HashMap::new();
         assert_eq!(
-            text(&weather_spans(&w)),
+            text(&weather_spans(&w, &none)),
             "Windy · Aurora Borealis
 7× luck · Aurora 1%"
         );
         assert_eq!(
-            text(&time_spans(&w)),
+            text(&time_spans(&w, &none)),
             "Night · Winter\nnight fish bite, day fish −75%\nWinter fish +25%, others −15%"
         );
         assert_eq!(rarity_rgb("Legendary"), Some(0xf0b56d));
@@ -523,11 +592,46 @@ mod tests {
         let turned = hue_shift(0x3e44ff, 30.0);
         assert!((hue(turned).unwrap() - (a + 30.0)).abs() < 1.5, "{turned:06x}");
         assert_eq!(
-            text(&boost_spans(&w)),
+            text(&boost_spans(&w, &none)),
             "Meteor · Luck ×2 · Mutation ×1.15\na meteor fell: its loot waits where it landed"
         );
-        assert_eq!(text(&boost_spans(&World::default())), "none");
-        assert_eq!(text(&time_spans(&World::default())), "–");
+        assert_eq!(text(&boost_spans(&World::default(), &none)), "none");
+        assert_eq!(text(&time_spans(&World::default(), &none)), "–");
+        // the HUD's tooltips: the clock and an event's time left; names bold italic in their icon's color
+        let tips = vec![
+            "Night\n12:13 AM".to_owned(),
+            "Shiny Surge\n+3% Shiny chance\n01:42 remaining".to_owned(),
+        ];
+        assert_eq!(game_clock(&tips), Some("12:13 AM"));
+        assert_eq!(time_left(&tips, "Shiny Surge"), Some("01:42"));
+        assert_eq!(time_left(&tips, "Mutation Surge"), None);
+        let surge = World {
+            events: vec!["Shiny Surge".into()],
+            cycle: "Night".into(),
+            tips,
+            ..World::default()
+        };
+        let colors: HashMap<String, String> = [("Shiny Surge".to_owned(), "f0d080".to_owned())].into();
+        let b = boost_spans(&surge, &colors);
+        assert_eq!(text(&b), "Shiny Surge 01:42 left\n+3% Shiny chance");
+        assert!(b[0].bold && b[0].italic && b[0].colors == hex_colors("f0d080"));
+        assert!(b.last().unwrap().italic && !b.last().unwrap().bold);
+        assert_eq!(
+            text(&time_spans(&surge, &colors)),
+            "Night · 12:13 AM\nnight fish bite, day fish −75%"
+        );
+        let gold = Texture {
+            w: 2,
+            h: 1,
+            rgba: vec![240, 208, 128, 255, 0, 0, 0, 0],
+        };
+        assert_eq!(icon_color(&gold).as_deref(), Some("f0d080"));
+        let white = Texture {
+            w: 1,
+            h: 1,
+            rgba: vec![255, 255, 255, 255],
+        };
+        assert_eq!(icon_color(&white), None);
         let r = [("Common".to_owned(), 2), ("Rare".to_owned(), 5)];
         assert_eq!(
             text(&tally_spans(&r, 1, 0, 0, (3, 4))),

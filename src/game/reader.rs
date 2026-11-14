@@ -601,6 +601,9 @@ pub struct World {
     pub boosts: Vec<(&'static str, f64)>,
     /// the game's version ("2.09.2")
     pub version: String,
+    /// the HUD's condition tooltips as the game writes them (status_tooltips): "Night\n12:13 AM", "Shiny Surge\n+3%
+    /// Shiny chance\n01:42 remaining"
+    pub tips: Vec<String>,
 }
 
 /// world/<value> -> what the dashboard calls the multiplier
@@ -689,6 +692,7 @@ pub struct GameReader {
     bestiary: Option<CachedPath>,
     rs_world: CachedPath, // ReplicatedStorage/world, from the DataModel
     world_kids: NamedKids,
+    statuses: CachedPath,     // hud/safezone/worldstatuses
     owner_kids: NamedKids,    // stats_owner's: Stats, Settings, ...
     settings_kids: NamedKids, // its Settings
     weather_kids: NamedKids,
@@ -737,6 +741,7 @@ impl GameReader {
             bestiary: None,
             rs_world: CachedPath::new(&["ReplicatedStorage", "world"]),
             world_kids: NamedKids::default(),
+            statuses: CachedPath::new(&["hud", "safezone", "worldstatuses"]),
             owner_kids: NamedKids::default(),
             settings_kids: NamedKids::default(),
             weather_kids: NamedKids::default(),
@@ -984,6 +989,22 @@ impl GameReader {
             })
             .collect();
         (!filter.is_empty()).then_some(filter)
+    }
+
+    /// The HUD's condition tooltips (hud/safezone/worldstatuses/<condition>/tooltip): its name, then the game's own
+    /// lines (the clock, an event's time left); ~60 reads.
+    pub fn status_tooltips(&mut self) -> Vec<String> {
+        if !self.resolve_player() {
+            return Vec::new();
+        }
+        let sess = self.sess.clone();
+        let (p, o) = (&sess.proc, &sess.offsets);
+        let strip = self.statuses.get(p, o, self.gui);
+        children(p, o, strip)
+            .into_iter()
+            .filter_map(|f| gui_text(p, o, child_by_name(p, o, f, "tooltip")))
+            .filter(|t| !t.is_empty())
+            .collect()
     }
 
     /// Weather, time, season, events and server boosts (ReplicatedStorage/world); ~40 reads.

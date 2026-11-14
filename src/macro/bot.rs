@@ -1276,7 +1276,8 @@ impl Engine<'_> {
                 }
                 if now >= next_world {
                     next_world = now + MS(1000); // ~40 reads; the weather changes with the day/night cycle
-                    if let Some(w) = r.world() {
+                    if let Some(mut w) = r.world() {
+                        w.tips = r.status_tooltips();
                         bot.view.lock().unwrap().world = w;
                     }
                     if let Some(f) = r.sell_filter() {

@@ -23,9 +23,9 @@ use windows::Win32::UI::WindowsAndMessaging::SHOW_WINDOW_CMD;
 use super::config::SettingsStore;
 use super::fish_pictures::FishPictures;
 use super::view::{
-    bestiary_color, boost_spans, catch_spans, coin_spans, condition_icons, earned_spans, gps_text, hms, hue_shift,
-    icon_strip, lifetime_spans, overlay_text, per_hour, rarity_rgb, save_warning, spans, styled, tally_spans,
-    time_spans, usage_text, weather_spans, xp_spans,
+    bestiary_color, boost_spans, catch_spans, coin_spans, condition_icon, condition_icons, earned_spans, gps_text, hms,
+    hue_shift, icon_color, icon_strip, lifetime_spans, overlay_text, per_hour, rarity_rgb, save_warning, spans, styled,
+    tally_spans, time_spans, usage_text, weather_spans, xp_spans,
 };
 use crate::game::catch::{Catch, LABEL_STROKE, bait_ability, bait_stats, rod_pieces, rod_stat_pieces, rod_stats};
 use crate::r#macro::bot::{Bot, earned, release_inputs};
@@ -190,9 +190,23 @@ Fisch {}",
             ) // the game's version, to tell an update that moved things
         };
         ui.set_status_tip(&format!("{}{version}", deps.updater.detail()));
-        ui.set_spans(ID_WEATHER, &weather_spans(&v.world));
-        ui.set_spans(ID_DAYTIME, &time_spans(&v.world));
-        ui.set_spans(ID_BOOSTS, &boost_spans(&v.world));
+        // each condition's name in its icon's color, as the game's tooltips show them
+        let colors: HashMap<String, String> = {
+            let cache = textures.borrow();
+            let w = &v.world;
+            w.weather
+                .iter()
+                .chain([&w.cycle, &w.season])
+                .chain(&w.events)
+                .filter_map(|n| {
+                    let icon = cache.get(&condition_icon(n)?)?;
+                    Some((n.clone(), icon_color(icon)?))
+                })
+                .collect()
+        };
+        ui.set_spans(ID_WEATHER, &weather_spans(&v.world, &colors));
+        ui.set_spans(ID_DAYTIME, &time_spans(&v.world, &colors));
+        ui.set_spans(ID_BOOSTS, &boost_spans(&v.world, &colors));
         for (id, names) in [ID_WEATHER, ID_DAYTIME, ID_BOOSTS]
             .into_iter()
             .zip(condition_icons(&v.world))
