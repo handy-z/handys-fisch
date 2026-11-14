@@ -554,21 +554,6 @@ pub struct SoldCatch {
     pub while_on: bool,
 }
 
-/// The rarities the game's Sell All has a switch for (Settings/willautosell_<lowercase>); the rest are always sold.
-pub const RARITY_SWITCHES: [&str; 11] = [
-    "Legendary",
-    "Mythical",
-    "Exotic",
-    "Secret",
-    "Relic",
-    "Gemstone",
-    "Extinct",
-    "Special",
-    "Event",
-    "Apex",
-    "Cataclysmic",
-];
-
 /// Earned over `catches` under `filter` (None: every catch): (value, its part caught while auto fish was on, catches
 /// kept).
 pub fn earned(catches: &[SoldCatch], filter: Option<&HashMap<String, bool>>) -> (i64, i64, i32) {
@@ -582,18 +567,6 @@ pub fn earned(catches: &[SoldCatch], filter: Option<&HashMap<String, bool>>) -> 
         }
     }
     out
-}
-
-/// The user's own filter (Settings::sold_rarities) in the game's form: every switchable rarity, sold when listed.
-pub fn my_filter(sold: &[String]) -> HashMap<String, bool> {
-    RARITY_SWITCHES
-        .iter()
-        .map(|r| {
-            let key = r.to_lowercase();
-            let on = sold.contains(&key);
-            (key, on)
-        })
-        .collect()
 }
 
 /// Whether the game's Sell All sells a catch of `rarity` under `filter` (sell_filter): the rarity's own switch, else
@@ -1495,9 +1468,6 @@ mod tests {
             .map(|(k, v)| (k.into(), v))
             .into();
         assert_eq!(earned(&catches, Some(&game)), (910, 10, 1)); // Legendary kept
-        let mine = my_filter(&["legendary".into()]);
-        assert_eq!(earned(&catches, Some(&mine)), (510, 510, 1)); // only Legendary of the switchable ones sold
-        assert_eq!(mine.len(), RARITY_SWITCHES.len());
     }
 
     #[test]

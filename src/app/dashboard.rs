@@ -13,20 +13,20 @@ use handy_sdk::input::key::vk_name;
 use handy_sdk::ui::Tone;
 use handy_sdk::ui::d2d::add_font_file;
 use handy_sdk::ui::d2d::load_texture;
-use handy_sdk::ui::dashboard::{Dashboard, Span, Spec, check, choice, page, rich_value, section, tile, value};
+use handy_sdk::ui::dashboard::{Dashboard, Span, Spec, check, page, rich_value, section, tile, value};
 use handy_sdk::ui::overlay::StatusOverlay;
 use handy_sdk::ui::raster::{Scene, Texture, Tri, aura, render};
 use handy_sdk::util::paths::app_data_dir;
 use windows::Win32::UI::WindowsAndMessaging::SHOW_WINDOW_CMD;
 
-use super::config::{EARNED_ALL, EARNED_GAME, SettingsStore};
+use super::config::SettingsStore;
 use super::fish_pictures::FishPictures;
 use super::view::{
     bestiary_color, boost_spans, catch_spans, coin_spans, earned_spans, gps_text, hms, hue_shift, lifetime_spans,
     overlay_text, per_hour, rarity_rgb, save_warning, spans, styled, tally_spans, time_text, weather_spans, xp_spans,
 };
 use crate::game::catch::{Catch, LABEL_STROKE, bait_ability, bait_stats, rod_pieces, rod_stat_pieces, rod_stats};
-use crate::r#macro::bot::{Bot, RARITY_SWITCHES, earned, my_filter, release_inputs};
+use crate::r#macro::bot::{Bot, earned, release_inputs};
 use handy_sdk::roblox::http::win_http_get_bytes;
 
 pub const DASHBOARD_CLASS: &str = "handys-fisch-dashboard";
@@ -63,8 +63,7 @@ const ID_WEATHER: i32 = 20;
 const ID_DAYTIME: i32 = 21;
 const ID_BOOSTS: i32 = 22;
 const ID_TALLY: i32 = 23;
-const ID_EARNED_MODE: i32 = 24;
-const ID_SOLD_BASE: i32 = 100; // + index into RARITY_SWITCHES: "counts as sold" with My rarities
+const ID_EARNED_FILTER: i32 = 24;
 /// What a fish card last drew: its model, size, textures loaded and shimmer frame.
 type DrawKey = (usize, u32, u32, usize, u128);
 /// A card's model's textures in its order, for (model, textures loaded).
@@ -139,21 +138,8 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             rich_value(ID_LOCATION, "Zone").lines(2),
             page("Settings"),
             section("Earned"),
-            choice(
-                ID_EARNED_MODE,
-                "Counts",
-                &["Game's sell filters", "Everything", "My rarities"],
-            ),
-            section("My rarities: sold"), // the rest (Common .. Rare) always are
-        ]
-        .into_iter()
-        .chain(
-            RARITY_SWITCHES
-                .iter()
-                .enumerate()
-                .map(|(i, r)| check(ID_SOLD_BASE + i as i32, r)),
-        )
-        .collect(),
+            check(ID_EARNED_FILTER, "Match game's sell filters\toff: count every catch"),
+        ],
         label_width: 100,
         value_width: 350,
         ..Default::default()
@@ -176,16 +162,12 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
         let on = bot.on.load(SeqCst);
         ui.set_check(ID_ON, on);
         ui.set_check(ID_PERFECT, st.perfect_cast);
-        ui.set_choice(ID_EARNED_MODE, st.earned_mode);
-        for (i, r) in RARITY_SWITCHES.iter().enumerate() {
-            ui.set_check(ID_SOLD_BASE + i as i32, st.sold_rarities.contains(&r.to_lowercase()));
-        }
-        // Earned under the chosen filter, from this session's catches (so a new choice applies to all of them)
-        let game_filter = bot.game_filter.lock().unwrap().clone();
-        let filter = match st.earned_mode {
-            EARNED_ALL => None,
-            EARNED_GAME => game_filter,
-            _ => Some(my_filter(&st.sold_rarities)),
+        ui.set_check(ID_EARNED_FILTER, st.earned_game_filter);
+        // Earned from this session's catches, so switching the filter applies to all of them
+        let filter = if st.earned_game_filter {
+            bot.game_filter.lock().unwrap().clone()
+        } else {
+            None
         };
         let (earned_value, earned_on, kept) = earned(&bot.sold.lock().unwrap(), filter.as_ref());
         let status = deps.updater.status();
@@ -490,11 +472,6 @@ Fisch {}",
         );
         overlay.set(&overlay_text(on, &v.phase, &v.stopped), on);
     });
-    d.on_choice(|_, id, index| {
-        if id == ID_EARNED_MODE {
-            bot.persist(|s| s.earned_mode = index);
-        }
-    });
     d.on_badge_click(|ui| {
         if matches!(deps.update.state(), UpdateState::Ready { .. }) && deps.bot.on.load(SeqCst) {
             return ui.flash(); // not while the app is working
@@ -509,17 +486,8 @@ Fisch {}",
         if id == ID_PERFECT {
             return bot.persist(|s| s.perfect_cast = checked);
         }
-        if let Some(r) = usize::try_from(id - ID_SOLD_BASE)
-            .ok()
-            .and_then(|i| RARITY_SWITCHES.get(i))
-        {
-            let key = r.to_lowercase();
-            return bot.persist(|s| {
-                s.sold_rarities.retain(|k| *k != key);
-                if checked {
-                    s.sold_rarities.push(key);
-                }
-            });
+        if id == ID_EARNED_FILTER {
+            return bot.persist(|s| s.earned_game_filter = checked);
         }
         bot.on.store(checked, SeqCst);
     });

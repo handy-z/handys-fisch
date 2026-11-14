@@ -19,15 +19,9 @@ pub struct Settings {
     pub last_tint: Option<u32>,
     pub rarest_icon: String,
     pub rarest_tint: Option<u32>,
-    /// what Earned counts: EARNED_GAME (the game's Sell All filters), EARNED_ALL, EARNED_MINE (sold_rarities)
-    pub earned_mode: usize,
-    /// with EARNED_MINE: the switchable rarities (RARITY_SWITCHES, lowercase) counted as sold
-    pub sold_rarities: Vec<String>,
+    /// Earned counts only what the game's Sell All filters would sell (else every catch)
+    pub earned_game_filter: bool,
 }
-
-pub const EARNED_GAME: usize = 0;
-pub const EARNED_ALL: usize = 1;
-pub const EARNED_MINE: usize = 2;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -41,8 +35,7 @@ impl Default for Settings {
             last_tint: None,
             rarest_icon: String::new(),
             rarest_tint: None,
-            earned_mode: EARNED_GAME,
-            sold_rarities: Vec::new(),
+            earned_game_filter: true,
         }
     }
 }
@@ -60,13 +53,7 @@ pub fn load_settings(file: &Path) -> Settings {
         last_tint: get_tint(&ini, "lastTint"),
         rarest_icon: ini.get_str("rarestIcon", ""),
         rarest_tint: get_tint(&ini, "rarestTint"),
-        earned_mode: (ini.get_int("earnedMode", d.earned_mode as i32) as usize).min(EARNED_MINE),
-        sold_rarities: ini
-            .get_str("soldRarities", "")
-            .split(',')
-            .filter(|r| !r.is_empty())
-            .map(str::to_owned)
-            .collect(),
+        earned_game_filter: ini.get_bool("earnedGameFilter", d.earned_game_filter),
     }
 }
 
@@ -90,8 +77,7 @@ pub fn save_settings(file: &Path, s: &Settings) {
     put_tint(&ini, "lastTint", s.last_tint);
     ini.put_str("rarestIcon", &s.rarest_icon);
     put_tint(&ini, "rarestTint", s.rarest_tint);
-    ini.put_int("earnedMode", s.earned_mode as i32);
-    ini.put_str("soldRarities", &s.sold_rarities.join(","));
+    ini.put_bool("earnedGameFilter", s.earned_game_filter);
 }
 
 impl SaveSettings for Settings {
@@ -132,8 +118,7 @@ mod tests {
             last_tint: Some(0xa60000),
             rarest_icon: String::new(),
             rarest_tint: None,
-            earned_mode: EARNED_MINE,
-            sold_rarities: vec!["legendary".into(), "relic".into()],
+            earned_game_filter: false,
         };
         save_settings(&ini, &s);
         assert!(load_settings(&ini) == s);
@@ -146,7 +131,7 @@ mod tests {
         .unwrap();
         let old = load_settings(&ini);
         assert!(old.last_icon.is_empty() && old.last_tint.is_none() && old.rarest_tint.is_none());
-        assert!(old.earned_mode == EARNED_GAME && old.sold_rarities.is_empty()); // from before Earned had a choice
+        assert!(old.earned_game_filter); // from before Earned had a choice: the game's filters
         assert!(load_settings(&dir.join("missing.ini")) == Settings::default());
         set_app_data_dir_for_tests(None);
         let _ = std::fs::remove_dir_all(dir);
