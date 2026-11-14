@@ -446,6 +446,41 @@ pub fn bait_ability(bait: &str) -> &'static str {
     BAITS.iter().find(|b| b.name == bait).map_or("", |b| b.ability)
 }
 
+/// What a server event or modifier does, from fischipedia.org/wiki/Weather (2026-11-13; "Meteor" is the app's own
+/// name for a fallen meteor); empty for one the wiki doesn't describe.
+pub fn event_effect(event: &str) -> &'static str {
+    match event {
+        "Shiny Surge" => "+3% Shiny chance",
+        "Mutation Surge" => "+15% mutation chance",
+        "Night of the Fireflies" => "night fish bite 2× as often",
+        "Day of the Luminous" | "Night of the Luminous" => "+10% Sparkling, caught and appraised",
+        "Moonlit Mirage" => "catches gain Lunar stacks: +5% weight each, up to +25%",
+        "Meteor" => "a meteor fell: its loot waits where it landed",
+        _ => "",
+    }
+}
+
+/// What the time of day and the season do (the wiki's Weather page): fish outside their time are 75% rarer; a
+/// season's fish 25% more common, the others 15% rarer. One line each (a row's rich text doesn't wrap); empty for an
+/// unknown one.
+pub fn time_effect(cycle: &str, season: &str) -> String {
+    let cycle = match cycle {
+        "Day" => "day fish bite, night fish −75%",
+        "Night" => "night fish bite, day fish −75%",
+        _ => "",
+    };
+    let season = if ["Spring", "Summer", "Autumn", "Winter"].contains(&season) {
+        format!("{season} fish +25%, others −15%")
+    } else {
+        String::new()
+    };
+    [cycle, season.as_str()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// What a weather does to fishing, from fischipedia.org/wiki/Weather (2026-11-13); empty for none worth showing.
 pub fn weather_effect(weather: &str) -> &'static str {
     match weather {

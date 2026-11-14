@@ -5,7 +5,9 @@ use handy_sdk::util::text::group_thousands;
 use handy_sdk::util::usage::Usage;
 use windows::Win32::Foundation::COLORREF;
 
-use crate::game::catch::{Catch, HUD_STROKE, LABEL_STROKE, Piece, catch_pieces, weather_effect};
+use crate::game::catch::{
+    Catch, HUD_STROKE, LABEL_STROKE, Piece, catch_pieces, event_effect, time_effect, weather_effect,
+};
 use crate::game::fisch_names::RARITIES;
 use crate::game::reader::World;
 
@@ -76,8 +78,10 @@ pub fn condition_icons(w: &World) -> [Vec<String>; 3] {
 }
 
 /// Square icons side by side from the left, each the strip's height (or less, so all fit), vertically centered, as
-/// premultiplied BGRA w x h.
-pub fn icon_strip(icons: &[Texture], w: u32, h: u32) -> Vec<u8> {
+/// premultiplied BGRA w x h. Their grey and white parts take `ink` (0xRRGGBB: the window's text color, so white
+/// glyphs stay seen on a light theme); colored parts keep their color.
+pub fn icon_strip(icons: &[Texture], w: u32, h: u32, ink: u32) -> Vec<u8> {
+    let ink = [16, 8, 0].map(|s| ((ink >> s) & 0xff) as f32 / 255.0);
     let (w, h) = (w as usize, h as usize);
     let mut out = vec![0u8; w * h * 4];
     let n = icons.len();
@@ -92,6 +96,12 @@ pub fn icon_strip(icons: &[Texture], w: u32, h: u32) -> Vec<u8> {
         for y in 0..side {
             for x in 0..side {
                 let [r, g, b, a] = icon.sample((x as f32 + 0.5) / side as f32, (y as f32 + 0.5) / side as f32);
+                let (hi, lo) = (r.max(g).max(b), r.min(g).min(b));
+                let [r, g, b] = if hi <= 0.0 || (hi - lo) / hi < 0.25 {
+                    ink
+                } else {
+                    [r, g, b]
+                };
                 let o = ((top + y) * w + left + x) * 4;
                 if o + 4 <= out.len() && left + x < w {
                     let byte = |v: f32| (v * a * 255.0).round().clamp(0.0, 255.0) as u8;
@@ -189,17 +199,21 @@ pub fn weather_spans(w: &World) -> Vec<Span> {
     out
 }
 
-/// "Night · Winter"
-pub fn time_text(w: &World) -> String {
+/// "Night · Winter", then what they do muted on the next line(s); "–" unread.
+pub fn time_spans(w: &World) -> Vec<Span> {
     let parts: Vec<&str> = [w.cycle.as_str(), w.season.as_str()]
         .into_iter()
         .filter(|p| !p.is_empty())
         .collect();
     if parts.is_empty() {
-        "–".into()
-    } else {
-        parts.join(" · ")
+        return styled("–", "", false, "");
     }
+    let mut out = styled(&parts.join(" · "), "", false, "");
+    let effect = time_effect(&w.cycle, &w.season);
+    if !effect.is_empty() {
+        out.extend(styled(&format!("\n{effect}"), MUTED, false, ""));
+    }
+    out
 }
 
 /// Events bold, then the server multipliers ("Luck ×2 · XP ×1.5"); a muted "none" when there are neither.
@@ -212,6 +226,16 @@ pub fn boost_spans(w: &World) -> Vec<Span> {
     if !boosts.is_empty() {
         let sep = if w.events.is_empty() { "" } else { " · " };
         out.extend(styled(&format!("{sep}{}", boosts.join(" · ")), "", false, ""));
+    }
+    // what the events do, muted under them
+    let effects: Vec<&str> = w
+        .events
+        .iter()
+        .map(|e| event_effect(e))
+        .filter(|e| !e.is_empty())
+        .collect();
+    if !effects.is_empty() {
+        out.extend(styled(&format!("\n{}", effects.join(" · ")), MUTED, false, ""));
     }
     out
 }
@@ -445,7 +469,10 @@ mod tests {
             "Windy · Aurora Borealis
 7× luck · Aurora 1%"
         );
-        assert_eq!(time_text(&w), "Night · Winter");
+        assert_eq!(
+            text(&time_spans(&w)),
+            "Night · Winter\nnight fish bite, day fish −75%\nWinter fish +25%, others −15%"
+        );
         assert_eq!(rarity_rgb("Legendary"), Some(0xf0b56d));
         assert_eq!(rarity_rgb("Exotic"), Some(0xff8080)); // a gradient's first color
         assert_eq!(rarity_rgb("Nope"), None);
@@ -467,12 +494,19 @@ mod tests {
             h: 1,
             rgba: vec![255, 0, 0, 255],
         };
-        let strip = icon_strip(&[red.clone(), red], 30, 10);
+        let strip = icon_strip(&[red.clone(), red], 30, 10, 0x202020);
         let at = |x: usize, y: usize| &strip[(y * 30 + x) * 4..(y * 30 + x) * 4 + 4];
         assert_eq!(at(0, 0), [0, 0, 255, 255]); // BGRA
         assert_eq!(at(10, 5), [0; 4]); // the gap
         assert_eq!(at(12, 5), [0, 0, 255, 255]);
         assert_eq!(at(25, 5), [0; 4]);
+        // a white glyph takes the ink (here a light theme's near-black text)
+        let white = Texture {
+            w: 1,
+            h: 1,
+            rgba: vec![255, 255, 255, 255],
+        };
+        assert_eq!(&icon_strip(&[white], 10, 10, 0x202020)[..4], [0x20, 0x20, 0x20, 255]);
         let u = Usage {
             cpu: Some(0.42),
             ram: Some(48 << 20),
@@ -488,9 +522,12 @@ mod tests {
         assert_eq!(hue_shift(0x707070, 90.0), 0x707070);
         let turned = hue_shift(0x3e44ff, 30.0);
         assert!((hue(turned).unwrap() - (a + 30.0)).abs() < 1.5, "{turned:06x}");
-        assert_eq!(text(&boost_spans(&w)), "Meteor · Luck ×2 · Mutation ×1.15");
+        assert_eq!(
+            text(&boost_spans(&w)),
+            "Meteor · Luck ×2 · Mutation ×1.15\na meteor fell: its loot waits where it landed"
+        );
         assert_eq!(text(&boost_spans(&World::default())), "none");
-        assert_eq!(time_text(&World::default()), "–");
+        assert_eq!(text(&time_spans(&World::default())), "–");
         let r = [("Common".to_owned(), 2), ("Rare".to_owned(), 5)];
         assert_eq!(
             text(&tally_spans(&r, 1, 0, 0, (3, 4))),
