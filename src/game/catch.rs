@@ -560,15 +560,15 @@ pub fn rod_pieces(label: &str, equipped: bool) -> Vec<Piece> {
     out
 }
 
-/// The rod's stat lines as the equipment panel lists them, two to a line in its order (the dashboard's tab stop is
-/// the second column), a long one on its own line: muted name, bright value, a bonus "(+28%)" in #ffd43a
-/// ("Lure Speed: 85% <font color="#ffd43a">(+28%)</font>").
-pub fn rod_stat_pieces(stats: &[String]) -> Vec<Piece> {
-    const WIDE: usize = 24;
+/// The rod's stat lines as the equipment panel lists them, in its order: two to a line when both are at most
+/// `pair_up_to` characters (the dashboard's tab stop is the second column; 0 puts each on its own line), muted name,
+/// bright value, a bonus "(+28%)" in #ffd43a ("Lure Speed: 85% <font color="#ffd43a">(+28%)</font>"). The game's
+/// "infkg" for an unlimited Max KG shows as "∞", as the wiki's does.
+pub fn rod_stat_pieces(stats: &[String], pair_up_to: usize) -> Vec<Piece> {
     let mut out = Vec::new();
     let mut second = false; // the next short stat goes in the second column
     for (i, s) in stats.iter().enumerate() {
-        let wide = s.chars().count() > WIDE;
+        let wide = s.chars().count() > pair_up_to;
         if i > 0 {
             out.push(piece(if second && !wide { "\t" } else { "\n" }, "", false, false, ""));
         }
@@ -579,6 +579,7 @@ pub fn rod_stat_pieces(stats: &[String]) -> Vec<Piece> {
         match main.split_once(": ") {
             Some((name, value)) => {
                 out.push(piece(format!("{name}: "), "9a9a9a", false, false, ""));
+                let value = if value.starts_with("inf") { "∞" } else { value };
                 out.push(piece(value, "", true, false, ""));
             }
             None => out.push(piece(main, "afafaf", true, false, "")),
@@ -896,7 +897,7 @@ mod tests {
         );
         assert_eq!(split_enchants("Weird Abyssal"), ["Weird", "Abyssal"]);
         assert_eq!(plain(&rod_pieces("Carrot Rod", false)), "Carrot Rod\nnot equipped");
-        let s = rod_stat_pieces(&strs(&["Lure Speed: 85% (+28%)", "Luck: 125%", "Caught: 737"]));
+        let s = rod_stat_pieces(&strs(&["Lure Speed: 85% (+28%)", "Luck: 125%", "Caught: 737"]), 24);
         assert_eq!(plain(&s), "Lure Speed: 85% (+28%)\tLuck: 125%\nCaught: 737");
         assert!(
             s[0] == piece("Lure Speed: ", "9a9a9a", false, false, "")
@@ -911,13 +912,20 @@ mod tests {
             "Control: 0.1",
         ]);
         assert_eq!(
-            plain(&rod_stat_pieces(&long)),
+            plain(&rod_stat_pieces(&long, 24)),
             "Luck: 1%\nHunt Focus: Absolute Darkness (+20)\nCaught: 2\tControl: 0.1"
         );
         // the wiki outlines some enchants: Chaotic is near-black with a white edge
         assert_eq!(
             rod_pieces("[Chaotic] Carrot Rod", true)[0],
             piece("★ Chaotic ★", "141316", true, false, "ffffff")
+        );
+        // one per line, and the game's unlimited weight
+        let s = rod_stat_pieces(&strs(&["Preferred Luck: +5000%", "Max KG: infkg"]), 0);
+        assert_eq!(
+            plain(&s),
+            "Preferred Luck: +5000%
+Max KG: ∞"
         );
     }
 }

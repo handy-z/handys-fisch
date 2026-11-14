@@ -115,7 +115,7 @@ pub fn run_dashboard(deps: &DashboardDeps, show: SHOW_WINDOW_CMD) -> i32 {
             section("Gear"),
             // the wiki's pictures over the names, like the Fish cards; tall, as rod pictures are (192×362)
             tile(ID_ROD_CARD, "Rod").picture(130).lines(3), // enchants, name, equipped
-            tile(ID_BAIT, "Bait").picture(130).lines(5),    // name, wiki stats two to a line, ability
+            tile(ID_BAIT, "Bait").picture(130).lines(7),    // name, up to 4 wiki stats, ability (may wrap)
             // two to a line (Rod Of The Depths' 9 take 6 lines); room for a long one more
             rich_value(ID_ROD, "Stats").lines(7),
             section("Progress"),
@@ -217,7 +217,7 @@ Fisch {}",
             } else {
                 pl.rod_stats.clone()
             };
-            ui.set_spans(ID_ROD, &spans(&rod_stat_pieces(&stats)));
+            ui.set_spans(ID_ROD, &spans(&rod_stat_pieces(&stats, 24)));
         }
         // the shop's bold name; the game says "None" with no bait on
         let bait = if pl.bait == "None" { "" } else { pl.bait.as_str() };
@@ -233,7 +233,7 @@ Fisch {}",
                         "
 ",
                     ));
-                    s.extend(spans(&rod_stat_pieces(&stats)));
+                    s.extend(spans(&rod_stat_pieces(&stats, 0))); // a half-width card: one per line
                 }
                 let ability = bait_ability(bait);
                 if !ability.is_empty() {
